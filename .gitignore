@@ -1,0 +1,33 @@
+# ── Sensitive runtime data — NEVER commit ──────────────────────────────────
+# Encrypted Telegram token + chat id, monitor state, and the per-user cache.
+notif_data/
+# Local secret overrides (real encryption key, login, cron token).
+config.local.php
+
+# Terminal-version monitor state (default lives in the user's home dir, but
+# ignore it here too in case it is created inside the repo).
+monitor_data/
+.backlink_monitor/
+*.enc
+
+# ── Generated reports / exports ────────────────────────────────────────────
+backlink_report.html
+prospects.csv
+*.pdf
+*.xls
+disavow.txt
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ── OS / editor cruft ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

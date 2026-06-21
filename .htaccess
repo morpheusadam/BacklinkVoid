@@ -1,0 +1,34 @@
+# Place at the document root of the folder/subdomain that serves this tool.
+#
+# Authoritative "do not index": this HTTP header keeps every response out of
+# Google/Bing even if someone links to it or a bot ignores robots.txt. This is
+# the reliable method; robots.txt alone is not.
+<IfModule mod_headers.c>
+  Header set X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+</IfModule>
+
+# No directory listings.
+Options -Indexes
+
+# Default page.
+DirectoryIndex index.php
+
+# Only index.php should be requested over the web. Block direct access to the
+# config and the class files (they are loaded via PHP include, not by URL).
+<FilesMatch "^(config|config\.local)\.php$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# --- Optional: password-protect the whole tool (recommended, since it fetches
+# --- arbitrary URLs). Create the password file via cPanel "Directory Privacy",
+# --- or generate an .htpasswd and uncomment the four lines below.
+# AuthType Basic
+# AuthName "Restricted"
+# AuthUserFile "/home/YOUR_CPANEL_USER/.htpasswds/checker/.htpasswd"
+# Require valid-user

@@ -1,0 +1,9 @@
+# Private tool — keep it out of search entirely.
+# Place this file at the document root so it is served at /robots.txt.
+#
+# Note: robots.txt blocks crawling, not indexing. The .htaccess in this folder
+# also sends "X-Robots-Tag: noindex" (the reliable method) and every page sends
+# a noindex meta tag.
+
+User-agent: *
+Disallow: /
