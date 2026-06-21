@@ -74,11 +74,20 @@ class Router
             return;
         }
 
-        // (5) Streaming analyze (POST ?stream=1) — used by the terminal loader.
-        //     Emits live bash-style progress, caches the report, then signals
-        //     @@DONE@@ so the browser opens the (already cached) report.
-        if (($_GET['stream'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-            self::streamAnalyze($cfg, $uid);
+        // (5) Live spam-check endpoints driven by the streaming console.
+        //     prepare (POST) stores the encrypted job + builds profile/PBN once;
+        //     sse (GET) streams per-domain verdicts via Server-Sent Events;
+        //     batch (POST) is the polling fallback (one slice per request).
+        if (($_GET['prepare'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            self::prepareJob($cfg, $uid);
+            return;
+        }
+        if (($_GET['sse'] ?? '') === '1') {
+            self::sseStream($cfg, $uid);
+            return;
+        }
+        if (($_GET['batch'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            self::batchCheck($cfg, $uid);
             return;
         }
 
@@ -130,15 +139,76 @@ class Router
         echo View::form($cfg);
     }
 
-    /**
-     * Streaming analyze endpoint for the terminal loader. Disables output
-     * buffering so progress reaches the browser live, runs the pipeline with a
-     * flushing progress callback, caches the finished report, then emits the
-     * @@DONE@@ sentinel with the report URL (the browser opens the cached report).
-     */
-    private static function streamAnalyze($cfg, $uid): void
+    /** Gather + sanitise the analyse inputs (textarea or uploaded file). */
+    private static function collectInput($cfg): array
     {
-        // Defeat buffering/compression so each line is flushed immediately.
+        $text = (string)($_POST['domains'] ?? '');
+        if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp_name'])) {
+            $uploaded = @file_get_contents($_FILES['file']['tmp_name']);
+            if ($uploaded !== false && trim($uploaded) !== '') {
+                $text = $uploaded;
+            }
+        }
+        $opts = [
+            'target_url' => trim($_POST['target_url'] ?? $cfg['TARGET_URL']) ?: $cfg['TARGET_URL'],
+            'limit' => max(0, (int)($_POST['limit'] ?? 0)),
+            'workers' => (int)($_POST['workers'] ?? $cfg['MAX_WORKERS']),
+            'live' => !empty($_POST['live']),
+            'verify_ssl' => !empty($_POST['verify_ssl']),
+        ];
+        return [$text, $opts];
+    }
+
+    /**
+     * ?prepare=1 (POST) — validate the list, build the topic profile + PBN map
+     * once, store an encrypted per-browser "job", and return {ok,total} as JSON.
+     * The slow per-domain checking then happens over SSE or batch polling.
+     */
+    private static function prepareJob($cfg, $uid): void
+    {
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store');
+        }
+        if (ACCESS_PASSWORD !== '' && (($_POST['pw'] ?? '') !== ACCESS_PASSWORD)) {
+            echo json_encode(['ok' => false, 'error' => 'Wrong password.']);
+            return;
+        }
+        if (!function_exists('openssl_encrypt')) {
+            echo json_encode(['ok' => false, 'error' => 'OpenSSL is unavailable on this host.']);
+            return;
+        }
+        [$text, $opts] = self::collectInput($cfg);
+        if (trim($text) === '') {
+            echo json_encode(['ok' => false, 'error' => 'No domains provided.']);
+            return;
+        }
+        $extra = array_filter(array_map('trim', explode(',', $_POST['niche'] ?? '')));
+        if ($extra) {
+            $cfg['NICHE_KEYWORDS'] = array_merge($cfg['NICHE_KEYWORDS'], $extra);
+        }
+
+        $records = Engine::parseRecords($text, $opts, $cfg);
+        $niche   = Engine::buildProfile($opts['target_url'], $cfg, !empty($opts['live']));
+        $pbn     = Engine::detectPbnClusters($records, $cfg);
+
+        $job = [
+            'records' => $records, 'niche' => $niche, 'pbn' => $pbn,
+            'opts' => $opts, 'total' => count($records),
+        ];
+        $ok = Security::cachePut($uid, 'job', json_encode($job, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        echo json_encode(['ok' => (bool)$ok, 'total' => count($records),
+                          'error' => $ok ? null : 'Could not store the job (file permissions).']);
+    }
+
+    /**
+     * ?sse=1 (GET) — Server-Sent Events stream. Emits `open` immediately (so the
+     * client can detect host buffering), then one `item` event per domain with
+     * its spam verdict, then `summary` and `done` (with the cached report URL).
+     */
+    private static function sseStream($cfg, $uid): void
+    {
+        // Defeat output buffering / compression so each event flushes live.
         @ini_set('zlib.output_compression', '0');
         @ini_set('output_buffering', '0');
         @ini_set('implicit_flush', '1');
@@ -147,67 +217,170 @@ class Router
         }
         ob_implicit_flush(true);
         if (!headers_sent()) {
-            header('Content-Type: text/plain; charset=utf-8');
-            header('Cache-Control: no-cache, no-store, must-revalidate');
-            header('X-Accel-Buffering: no'); // ask nginx not to buffer the stream
+            header('Content-Type: text/event-stream; charset=utf-8');
+            header('Cache-Control: no-cache, no-store, must-revalidate, private');
+            header('Connection: keep-alive');
+            header('X-Accel-Buffering: no');   // nginx / hcdn: do not buffer
+            header('Content-Encoding: identity'); // discourage gzip on the stream
         }
-        // ~2 KB of padding nudges FastCGI/proxies to start flushing right away.
-        echo str_repeat(' ', 2048) . "\n";
+        echo ':' . str_repeat(' ', 2048) . "\n\n"; // primer comment to flush proxies
         @flush();
 
-        $emit = static function ($line) {
-            echo $line . "\n";
+        $send = static function ($event, $data) {
+            echo 'event: ' . $event . "\n";
+            echo 'data: ' . json_encode($data) . "\n\n";
             @flush();
         };
+        $send('hello', ['ts' => time()]);
 
-        // Same password gate as the plain POST handler.
-        if (ACCESS_PASSWORD !== '' && (($_POST['pw'] ?? '') !== ACCESS_PASSWORD)) {
-            $emit('[error] wrong password');
-            $emit('@@FAIL@@');
+        $raw = function_exists('openssl_decrypt') ? Security::cacheGet($uid, 'job') : null;
+        $job = $raw ? json_decode($raw, true) : null;
+        if (!$job || empty($job['records'])) {
+            $send('fail', ['msg' => 'No job found — submit the form again.']);
             return;
         }
 
-        // Gather input (uploaded file overrides the textarea).
-        $text = (string)($_POST['domains'] ?? '');
-        if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp_name'])) {
-            $uploaded = @file_get_contents($_FILES['file']['tmp_name']);
-            if ($uploaded !== false && trim($uploaded) !== '') {
-                $text = $uploaded;
+        $records = $job['records'];
+        $niche = $job['niche'];
+        $pbn = $job['pbn'];
+        $opts = $job['opts'];
+        $do_fetch = !empty($opts['live']);
+        $cfg['MAX_WORKERS'] = max(1, min(64, (int)$opts['workers']));
+        $cfg['VERIFY_SSL'] = !empty($opts['verify_ssl']);
+        $cfg['REQUEST_TIMEOUT'] = 5;  // 5s per request so the server never locks
+
+        $counts = ['spam' => 0, 'suspicious' => 0, 'clean' => 0];
+        $byUrl = [];
+        foreach ($records as $i => $rec) {
+            if (($rec['source_url'] ?? '') !== '') {
+                $byUrl[$rec['source_url']][] = $i;
             }
         }
-        if (trim($text) === '') {
-            $emit('[error] no domains provided');
-            $emit('@@FAIL@@');
+        $processed = [];
+
+        if ($do_fetch && function_exists('curl_multi_init')) {
+            Engine::fetchMany(array_keys($byUrl), $cfg, function ($url, $status, $final, $body, $ms)
+                use (&$records, &$byUrl, &$processed, &$counts, $niche, $pbn, $cfg, $do_fetch, $send) {
+                foreach (($byUrl[$url] ?? []) as $idx) {
+                    Engine::extractSignals($records[$idx], $status, $final, $body, $cfg);
+                    Engine::processOne($records[$idx], $niche, $pbn, $cfg, $do_fetch);
+                    $processed[$idx] = true;
+                    $v = Engine::verdict($records[$idx]);
+                    $counts[$v['tier']]++;
+                    $send('item', $v);
+                }
+            });
+        }
+        // Offline / not-fetched-in-time domains — still audited and emitted.
+        foreach ($records as $idx => $rec) {
+            if (!empty($processed[$idx])) {
+                continue;
+            }
+            if ($do_fetch && ($rec['source_url'] ?? '') !== '') {
+                $records[$idx]['fetch_skipped'] = true;
+            }
+            Engine::processOne($records[$idx], $niche, $pbn, $cfg, $do_fetch);
+            $v = Engine::verdict($records[$idx]);
+            $counts[$v['tier']]++;
+            $send('item', $v);
+        }
+
+        // Build + cache the full ranked report so "Open full report" works.
+        $r = Engine::assembleReport($records, $niche, $opts);
+        if (function_exists('openssl_encrypt')) {
+            Security::cachePut($uid, 'report', View::report($r, $opts));
+        }
+
+        $send('summary', ['total' => count($records)] + $counts);
+        $send('done', ['ok' => true, 'report' => '?report=1']);
+    }
+
+    /**
+     * ?batch=1 (POST {offset,size}) — polling fallback for hosts that buffer SSE
+     * (e.g. Hostinger hcdn). Checks one slice and returns its verdicts as JSON;
+     * on the final slice it assembles + caches the full report.
+     */
+    private static function batchCheck($cfg, $uid): void
+    {
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store');
+        }
+        $raw = function_exists('openssl_decrypt') ? Security::cacheGet($uid, 'job') : null;
+        $job = $raw ? json_decode($raw, true) : null;
+        if (!$job || !isset($job['records'])) {
+            echo json_encode(['ok' => false, 'error' => 'no job']);
             return;
         }
+        $records = $job['records'];
+        $niche = $job['niche'];
+        $pbn = $job['pbn'];
+        $opts = $job['opts'];
+        $total = count($records);
+        $offset = max(0, (int)($_POST['offset'] ?? 0));
+        $size = min(40, max(1, (int)($_POST['size'] ?? 20)));
+        $do_fetch = !empty($opts['live']);
+        $cfg['MAX_WORKERS'] = max(1, min(64, (int)$opts['workers']));
+        $cfg['VERIFY_SSL'] = !empty($opts['verify_ssl']);
+        $cfg['REQUEST_TIMEOUT'] = 5;
 
-        $opts = [
-            'target_url' => trim($_POST['target_url'] ?? $cfg['TARGET_URL']) ?: $cfg['TARGET_URL'],
-            'limit' => max(0, (int)($_POST['limit'] ?? 0)),
-            'workers' => (int)($_POST['workers'] ?? $cfg['MAX_WORKERS']),
-            'live' => !empty($_POST['live']),
-            'verify_ssl' => !empty($_POST['verify_ssl']),
-        ];
-        $extra = array_filter(array_map('trim', explode(',', $_POST['niche'] ?? '')));
-        if ($extra) {
-            $cfg['NICHE_KEYWORDS'] = array_merge($cfg['NICHE_KEYWORDS'], $extra);
+        $slice = array_slice($records, $offset, $size, true);
+        $fetched = [];
+        if ($do_fetch && function_exists('curl_multi_init')) {
+            $urls = [];
+            foreach ($slice as $rec) {
+                if (($rec['source_url'] ?? '') !== '') {
+                    $urls[] = $rec['source_url'];
+                }
+            }
+            if ($urls) {
+                $fetched = Engine::fetchMany($urls, $cfg);
+            }
         }
 
-        $emit('$ backlink-scan --target ' . $opts['target_url']
-            . ($opts['live'] ? ' --live' : ' --no-fetch') . ' --workers ' . $opts['workers']);
-
-        $r = Engine::runPipeline($text, $opts, $cfg, $emit);
-        $html = View::report($r, $opts);
-
-        if (function_exists('openssl_encrypt') && Security::cachePut($uid, 'report', $html)) {
-            $emit('[ok]    report cached — opening…');
-            $emit('@@DONE@@?report=1');
-        } else {
-            // No encrypted cache available (rare): hand the report back inline so
-            // the client can still render it via document.write.
-            $emit('@@HTML@@');
-            echo $html;
+        $out = [];
+        $slim = [];
+        foreach ($slice as $idx => $rec) {
+            if ($do_fetch && isset($fetched[$rec['source_url']])) {
+                $f = $fetched[$rec['source_url']];
+                Engine::extractSignals($rec, $f['status'], $f['final'], $f['body'], $cfg);
+            } elseif ($do_fetch && ($rec['source_url'] ?? '') !== '') {
+                $rec['fetch_skipped'] = true;
+            }
+            Engine::processOne($rec, $niche, $pbn, $cfg, $do_fetch);
+            $out[] = Engine::verdict($rec);
+            $slim[$idx] = Engine::slimRecord($rec);
         }
+        Security::cachePut($uid, 'prog_' . $offset, json_encode($slim, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        $next = $offset + count($slice);
+        $done = $next >= $total;
+        $reportUrl = null;
+        if ($done) {
+            // Re-read every persisted slice (client uses a constant size, so the
+            // offsets are 0, size, 2*size, …) and assemble the full report.
+            $all = [];
+            for ($o = 0; $o < $total; $o += $size) {
+                $praw = Security::cacheGet($uid, 'prog_' . $o);
+                $part = $praw ? json_decode($praw, true) : null;
+                if (is_array($part)) {
+                    foreach ($part as $k => $v) {
+                        $all[(int)$k] = $v;
+                    }
+                }
+            }
+            ksort($all);
+            $r = Engine::assembleReport(array_values($all), $niche, $opts);
+            if (function_exists('openssl_encrypt')) {
+                Security::cachePut($uid, 'report', View::report($r, $opts));
+            }
+            $reportUrl = '?report=1';
+        }
+
+        echo json_encode([
+            'ok' => true, 'results' => $out, 'next' => $next,
+            'total' => $total, 'done' => $done, 'report' => $reportUrl,
+        ]);
     }
 
     /**

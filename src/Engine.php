@@ -79,7 +79,7 @@ class Engine
     // -------------------------------------------------- live fetch (cURL)
 
     /** Fetch many URLs in parallel with curl_multi, honouring an overall deadline. */
-    public static function fetchMany($urls, $cfg, $onProgress = null): array
+    public static function fetchMany($urls, $cfg, $onDone = null): array
     {
         $results = [];
         if (!function_exists('curl_multi_init') || !$urls) {
@@ -145,10 +145,9 @@ class Engine
                     'final' => $final ?: $url,
                     'body' => ($body !== false && !($err && $code === 0)) ? (string)$body : '',
                 ];
-                if ($onProgress) {
-                    $host = strtolower((string)parse_url($url, PHP_URL_HOST));
+                if ($onDone) {
                     $ms = isset($meta['start']) ? (int)round((microtime(true) - $meta['start']) * 1000) : 0;
-                    $onProgress('[fetch] ' . str_pad($code > 0 ? (string)$code : 'ERR', 3) . '  ' . $host . ($ms ? '  (' . $ms . 'ms)' : ''));
+                    $onDone($url, $code, $results[$url]['final'], $results[$url]['body'], $ms);
                 }
                 curl_multi_remove_handle($mh, $ch);
                 curl_close($ch);
@@ -638,7 +637,10 @@ class Engine
             }
             $log('[fetch] live fetch: ' . count(array_unique($urls)) . ' url(s) · workers=' . $cfg['MAX_WORKERS']
                 . ' · timeout=' . $cfg['REQUEST_TIMEOUT'] . 's · deadline=' . $cfg['OVERALL_DEADLINE'] . 's');
-            $fetched = self::fetchMany($urls, $cfg, $onProgress ? $log : null);
+            $fetched = self::fetchMany($urls, $cfg, $onProgress ? function ($url, $status, $final, $body, $ms) use ($log) {
+                $host = strtolower((string)parse_url($url, PHP_URL_HOST));
+                $log('[fetch] ' . str_pad($status > 0 ? (string)$status : 'ERR', 3) . '  ' . $host . ($ms ? '  (' . $ms . 'ms)' : ''));
+            } : null);
             foreach ($backlinks as &$bl) {
                 if ($bl['source_url'] === '') {
                     continue;
@@ -780,5 +782,71 @@ class Engine
             return ['tier' => 'review', 'risk' => min(100, $score), 'signals' => $soft, 'confidence' => ''];
         }
         return ['tier' => 'keep', 'risk' => 0, 'signals' => [], 'confidence' => ''];
+    }
+
+    // ------------------------------------------- streaming / batch helpers
+
+    /** Parse + de-duplicate the input list into backlink records (no fetch). */
+    public static function parseRecords($text, $opts, $cfg): array
+    {
+        $backlinks = self::loadLines($text, $cfg);
+        if (!empty($opts['limit']) && (int)$opts['limit'] > 0) {
+            $backlinks = array_slice($backlinks, 0, (int)$opts['limit']);
+        }
+        return array_values(self::dedupeDomains($backlinks));
+    }
+
+    /** Score + classify + audit one (already-fetched-or-offline) backlink. */
+    public static function processOne(&$bl, $niche, $pbn, $cfg, $do_fetch): void
+    {
+        [$bl['spam_points'], $bl['spam_signals']] = self::computeSpamPoints($bl, $pbn, $cfg);
+        self::scoreProspect($bl, $niche, $cfg);
+        self::classifyProspect($bl, $cfg, $do_fetch);
+        $bl['audit'] = self::auditRisk($bl, $cfg, $pbn);
+    }
+
+    /** A compact live "verdict" for one backlink (Spam / Suspicious / Clean). */
+    public static function verdict($bl): array
+    {
+        $map = ['disavow' => 'spam', 'review' => 'suspicious', 'keep' => 'clean'];
+        $tier = $bl['audit']['tier'] ?? 'keep';
+        return [
+            'domain'  => $bl['registrable_domain'] !== '' ? $bl['registrable_domain'] : $bl['raw'],
+            'http'    => $bl['http_status'],
+            'tier'    => $map[$tier] ?? 'clean',
+            'score'   => $bl['score'],
+            'signals' => array_values($bl['audit']['signals'] ?? []),
+        ];
+    }
+
+    /** Drop the heavy text fields before persisting a record between batches. */
+    public static function slimRecord($bl): array
+    {
+        unset($bl['text_sample'], $bl['meta_description']);
+        return $bl;
+    }
+
+    /** Build the final report payload from already-processed records. */
+    public static function assembleReport($records, $niche, $opts): array
+    {
+        $do_fetch = !empty($opts['live']);
+        $fetchable = 0;
+        $fetched = 0;
+        foreach ($records as $bl) {
+            if (($bl['source_url'] ?? '') !== '') {
+                $fetchable++;
+                if (empty($bl['fetch_skipped'])) {
+                    $fetched++;
+                }
+            }
+        }
+        $prospects = array_values(array_filter($records, fn($b) => ($b['status'] ?? '') === 'prospect'));
+        usort($prospects, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+        $avoid = array_values(array_filter($records, fn($b) => ($b['status'] ?? '') === 'avoid'));
+        return [
+            'prospects' => $prospects, 'avoid' => $avoid, 'niche' => $niche,
+            'total' => count($records),
+            'live' => $do_fetch, 'fetchable' => $fetchable, 'fetched' => $fetched,
+        ];
     }
 }

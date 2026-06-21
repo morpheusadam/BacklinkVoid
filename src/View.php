@@ -632,15 +632,22 @@ HTML;
   .term-body .l-err  { color:#fca5a5; }
   .term-body .l-info { color:#93c5fd; }
   .term-body .l-done { color:#34d399; font-weight:700; }
+  .term-body .l-clean { color:#86efac; }
+  .term-body .l-susp  { color:#fcd34d; }
+  .term-body .l-spam  { color:#fca5a5; font-weight:700; }
   .term-body .cur { display:inline-block; width:8px; height:15px; background:#34d399;
                     vertical-align:-2px; animation:blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity:0; } }
-  .term-foot { display:flex; align-items:center; gap:10px; padding:9px 14px; background:#121826;
-               border-top:1px solid #1d2734; color:#9fb3c8; font:12px ui-monospace,Consolas,monospace; }
-  .term-spin { color:#5eead4; letter-spacing:2px; }
-  .term-close { margin-left:auto; background:#1f2a3a; color:#cbd5e1; border:1px solid #2c3a4e;
+  .term-foot { display:flex; align-items:center; gap:12px; padding:9px 14px; background:#121826;
+               border-top:1px solid #1d2734; color:#9fb3c8; font:12px ui-monospace,Consolas,monospace;
+               flex-wrap:wrap; }
+  .term-foot .muted { color:#6b7c92; }
+  .term-actions { margin-left:auto; display:inline-flex; gap:8px; }
+  .term-btn, .term-close { background:#1f2a3a; color:#cbd5e1; border:1px solid #2c3a4e;
                 border-radius:5px; padding:5px 12px; font:inherit; cursor:pointer; }
-  .term-close:hover { background:#27374b; }
+  .term-btn:hover, .term-close:hover { background:#27374b; }
+  .term-btn.primary { background:#134e4a; border-color:#155e57; color:#a7f3d0; }
+  .term-btn.primary:hover { background:#166057; }
 </style>
 </head>
 <body>
@@ -648,13 +655,18 @@ HTML;
   <div class="term-win">
     <div class="term-bar">
       <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="term-title">backlink-scan — live analysis</span>
+      <span class="term-title">spam-check — live</span>
       <span class="term-elapsed" id="termTime">0.0s</span>
     </div>
     <pre class="term-body" id="termBody"><span class="cur"></span></pre>
     <div class="term-foot">
       <span class="term-spin" id="termSpin">▰▱▱</span>
-      <span id="termStat">starting…</span>
+      <span id="termCounts">🟢 0 · 🟡 0 · 🔴 0</span>
+      <span id="termStat" class="muted">starting…</span>
+      <span class="term-actions" id="termActions" hidden>
+        <button type="button" class="term-btn" id="btnDisavow">⬇ disavow.txt</button>
+        <button type="button" class="term-btn primary" id="btnReport">Open full report ↗</button>
+      </span>
       <button type="button" class="term-close" id="termClose" hidden>Close</button>
     </div>
   </div>
@@ -691,107 +703,148 @@ HTML;
   </form>
 </div>
 <script>
-// Streaming "terminal" loader: intercept submit, POST to ?stream=1, render the
-// live bash-style progress, and open the (already cached) report on @@DONE@@.
-// Falls back to a normal full-page POST when streaming isn't available.
+// Live spam-check console. Submits the list once (?prepare=1), then streams
+// per-domain verdicts via Server-Sent Events (?sse=1). If the host buffers SSE
+// (no "hello" within ~6s, e.g. Hostinger hcdn), it auto-switches to batch
+// polling (?batch=1). Falls back to a normal POST when streaming is unavailable.
 var STREAM_OK = {$stream_ok};
+var BATCH = 20;
+var TERM = {};
+function el(id){ return document.getElementById(id); }
+
 (function(){
   var form = document.querySelector('form[data-scan]');
   if(!form) return;
   form.addEventListener('submit', function(ev){
-    if(!STREAM_OK || !window.fetch || !window.ReadableStream || typeof TextDecoder === 'undefined') return;
+    if(!STREAM_OK || !window.fetch){ return; } // no streaming support -> normal POST
     ev.preventDefault();
-    runScan(form);
+    startCheck(form);
   });
 })();
 
-function runScan(form){
-  var term = document.getElementById('term');
-  var body = document.getElementById('termBody');
-  var stat = document.getElementById('termStat');
-  var spin = document.getElementById('termSpin');
-  var timeEl = document.getElementById('termTime');
-  var closeBtn = document.getElementById('termClose');
-  term.hidden = false;
-
-  var t0 = Date.now(), fetched = 0, done = false, htmlMode = false, htmlBuf = '';
+function startCheck(form){
+  TERM = { t0:Date.now(), checked:0, total:0, counts:{clean:0,suspicious:0,spam:0},
+           spam:[], finished:false, polling:false, reportUrl:'?report=1', es:null, fbTimer:null, timer:null };
+  el('term').hidden = false;
+  el('termActions').hidden = true; el('termClose').hidden = true;
+  el('termBody').innerHTML = '<span class="cur"></span>';
+  setCounts(); setStat('preparing…');
   var frames = ['▰▱▱','▰▰▱','▰▰▰','▰▰▱'], fi = 0;
-  var timer = setInterval(function(){
-    timeEl.textContent = ((Date.now() - t0) / 1000).toFixed(1) + 's';
-    if(!done){ spin.textContent = frames[fi = (fi + 1) % frames.length]; }
+  TERM.timer = setInterval(function(){
+    el('termTime').textContent = ((Date.now()-TERM.t0)/1000).toFixed(1)+'s';
+    if(!TERM.finished){ el('termSpin').textContent = frames[fi=(fi+1)%frames.length]; }
   }, 200);
 
-  function cls(line){
-    if(line.charAt(0) === '$') return 'l-cmd';
-    if(/^\[done\]/.test(line) || line.charAt(0) === '✓') return 'l-done';
-    if(/^\[ok\]/.test(line)) return 'l-ok';
-    if(/^\[error\]/.test(line) || line.charAt(0) === '✗') return 'l-err';
-    if(/^\[fetch\]\s+(ERR|4\d\d|5\d\d)/.test(line)) return 'l-warn';
-    if(/^\[fetch\]\s+[23]\d\d/.test(line)) return 'l-ok';
-    if(/^\[(audit|init|pbn|score|dedupe|fetch)\]/.test(line)) return 'l-info';
-    return '';
-  }
-  function addLine(line){
-    var cur = body.querySelector('.cur');
-    var span = document.createElement('span');
-    var c = cls(line);
-    if(c) span.className = c;
-    span.textContent = line + '\n';
-    body.insertBefore(span, cur);
-    body.scrollTop = body.scrollHeight;
-  }
-  function handle(line){
-    if(line.indexOf('@@DONE@@') === 0){
-      var url = line.slice(8).trim() || '?report=1';
-      done = true; addLine('✓ analysis complete — opening report…');
-      stat.textContent = 'complete'; spin.textContent = '✓';
-      clearInterval(timer);
-      setTimeout(function(){ window.location.href = url; }, 650);
-      return;
-    }
-    if(line.indexOf('@@FAIL@@') === 0){
-      done = true; addLine('✗ failed — see the message above');
-      stat.textContent = 'failed'; spin.textContent = '✗';
-      clearInterval(timer);
-      closeBtn.hidden = false; closeBtn.onclick = function(){ term.hidden = true; };
-      return;
-    }
-    if(line.indexOf('@@HTML@@') === 0){ htmlMode = true; return; }
-    if(line.trim() === '') return;
-    addLine(line);
-    if(/^\[fetch\]\s+(\d{3}|ERR)\b/.test(line)){ fetched++; stat.textContent = fetched + ' fetched'; }
-  }
-
-  var fd = new FormData(form);
-  fetch('?stream=1', {method:'POST', body:fd, credentials:'same-origin', headers:{'X-Requested-With':'fetch'}})
-    .then(function(resp){
-      if(!resp.ok || !resp.body){ throw new Error('HTTP ' + resp.status); }
-      var reader = resp.body.getReader(), dec = new TextDecoder(), buf = '';
-      (function pump(){
-        return reader.read().then(function(res){
-          if(res.done){
-            if(htmlMode){ htmlBuf += buf; if(htmlBuf){ document.open(); document.write(htmlBuf); document.close(); } }
-            else if(buf){ handle(buf); }
-            return;
-          }
-          if(htmlMode){ htmlBuf += dec.decode(res.value, {stream:true}); return pump(); }
-          buf += dec.decode(res.value, {stream:true});
-          var idx;
-          while(!htmlMode && (idx = buf.indexOf('\n')) >= 0){
-            handle(buf.slice(0, idx));
-            buf = buf.slice(idx + 1);
-          }
-          if(htmlMode){ htmlBuf += buf; buf = ''; }
-          return pump();
-        });
-      })();
+  line('$ spam-check  (preparing job…)', 'l-cmd');
+  fetch('?prepare=1', {method:'POST', body:new FormData(form), credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d || !d.ok){ fail(d && d.error ? d.error : 'prepare failed'); return; }
+      TERM.total = d.total;
+      line('· '+d.total+' unique domain(s) queued', 'l-info');
+      setStat('0 / '+d.total);
+      if(window.EventSource){ startSSE(); } else { startPolling(); }
     })
-    .catch(function(e){
-      clearInterval(timer);
-      addLine('[error] ' + (e && e.message ? e.message : e));
-      addLine('falling back to a normal submit…');
-      setTimeout(function(){ form.removeAttribute('data-scan'); form.submit(); }, 900);
-    });
+    .catch(function(e){ fail('prepare error: '+(e&&e.message?e.message:e)); });
+}
+
+function startSSE(){
+  line('· connecting (SSE)…', 'l-info');
+  var es; try { es = new EventSource('?sse=1'); } catch(e){ startPolling(); return; }
+  TERM.es = es;
+  TERM.fbTimer = setTimeout(function(){            // no "hello" => host buffered SSE
+    if(!TERM.finished){ line('· host buffered the stream — switching to batch mode…','l-warn'); closeES(); startPolling(); }
+  }, 6000);
+  es.addEventListener('hello',   function(){ clearTimeout(TERM.fbTimer); line('· streaming connected','l-info'); });
+  es.addEventListener('item',    function(ev){ onItem(JSON.parse(ev.data)); });
+  es.addEventListener('summary', function(ev){ onSummary(JSON.parse(ev.data)); });
+  es.addEventListener('done',    function(ev){ TERM.finished = true; closeES(); onDone(JSON.parse(ev.data)); });
+  es.addEventListener('fail',    function(ev){ TERM.finished = true; closeES(); fail((JSON.parse(ev.data)||{}).msg||'failed'); });
+  es.onerror = function(){
+    if(TERM.finished){ closeES(); return; }
+    clearTimeout(TERM.fbTimer); closeES();
+    line('· stream interrupted — switching to batch mode…','l-warn');
+    startPolling();
+  };
+}
+function closeES(){ if(TERM.es){ try{TERM.es.close();}catch(e){} TERM.es = null; } }
+
+function startPolling(){
+  if(TERM.polling || TERM.finished) return;
+  TERM.polling = true;
+  // SSE arrives in fetch-completion order, so restart the verdict list cleanly.
+  el('termBody').innerHTML = '<span class="cur"></span>';
+  TERM.checked = 0; TERM.counts = {clean:0,suspicious:0,spam:0}; TERM.spam = [];
+  setCounts();
+  line('$ spam-check --batch '+BATCH, 'l-cmd');
+  poll(0);
+}
+function poll(offset){
+  var fd = new FormData(); fd.append('offset', offset); fd.append('size', BATCH);
+  fetch('?batch=1', {method:'POST', body:fd, credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d || !d.ok){ fail(d && d.error ? d.error : 'batch failed'); return; }
+      (d.results||[]).forEach(onItem);
+      setStat(Math.min(d.next,d.total)+' / '+d.total);
+      if(d.done){ onSummary({total:d.total, clean:TERM.counts.clean, suspicious:TERM.counts.suspicious, spam:TERM.counts.spam}); onDone({report:d.report}); }
+      else { poll(d.next); }
+    })
+    .catch(function(e){ fail('batch error: '+(e&&e.message?e.message:e)); });
+}
+
+function pad(s, n){ s = String(s); while(s.length < n){ s += ' '; } return s; }
+function line(text, cls){
+  var cur = el('termBody').querySelector('.cur');
+  var span = document.createElement('span');
+  if(cls){ span.className = cls; }
+  span.textContent = text + '\n';
+  el('termBody').insertBefore(span, cur);
+  el('termBody').scrollTop = el('termBody').scrollHeight;
+}
+function onItem(v){
+  TERM.checked++;
+  var tier = v.tier || 'clean';
+  TERM.counts[tier] = (TERM.counts[tier]||0) + 1;
+  if(tier === 'spam'){ TERM.spam.push(v); }
+  var tag  = tier==='spam' ? '[SPAM]' : (tier==='suspicious' ? '[SUSP]' : '[ OK ]');
+  var http = v.http ? (' '+v.http) : '';
+  var extra = tier==='clean' ? (v.score!=null ? ('   score '+v.score) : '') : ('   '+((v.signals||[]).join('; ')));
+  line(tag+'  '+pad(v.domain, 32)+http+extra, tier==='spam'?'l-spam':(tier==='suspicious'?'l-susp':'l-clean'));
+  setCounts();
+}
+function onSummary(s){
+  line('', '');
+  line('── summary ──  '+(s.total||TERM.checked)+' checked · '+(s.clean||0)+' clean · '+(s.suspicious||0)+' suspicious · '+(s.spam||0)+' spam', 'l-done');
+}
+function onDone(d){
+  TERM.finished = true;
+  if(d && d.report){ TERM.reportUrl = d.report; }
+  clearInterval(TERM.timer);
+  el('termSpin').textContent = '✓'; setStat('done');
+  el('termActions').hidden = false; el('termClose').hidden = false;
+  el('btnDisavow').disabled = TERM.spam.length === 0;
+  el('btnDisavow').onclick = downloadDisavow;
+  el('btnReport').onclick = function(){ window.location.href = TERM.reportUrl || '?report=1'; };
+  el('termClose').onclick = function(){ el('term').hidden = true; };
+}
+function fail(msg){
+  TERM.finished = true; clearInterval(TERM.timer);
+  el('termSpin').textContent = '✗'; setStat('failed');
+  line('[error] '+msg, 'l-err');
+  el('termClose').hidden = false; el('termClose').onclick = function(){ el('term').hidden = true; };
+}
+function setStat(s){ el('termStat').textContent = s; }
+function setCounts(){ el('termCounts').textContent = '🟢 '+(TERM.counts.clean||0)+' · 🟡 '+(TERM.counts.suspicious||0)+' · 🔴 '+(TERM.counts.spam||0); }
+function downloadDisavow(){
+  var d = new Date();
+  var ds = d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+  var out = ['# Disavow generated '+ds, '# Source: Backlink spam-check (hard-spam only)', '#'];
+  TERM.spam.forEach(function(v){ out.push('# '+(((v.signals||[]).join('; '))||'spam')); out.push('domain:'+v.domain); });
+  if(TERM.spam.length === 0){ out.push('# No spam domains detected.'); }
+  var blob = new Blob([out.join('\n')+'\n'], {type:'text/plain;charset=utf-8'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'disavow.txt';
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
 }
 </script>
 </body>
