@@ -38,6 +38,7 @@ class Debug
         @error_reporting(E_ALL);
         set_error_handler([self::class, 'onError']);
         register_shutdown_function([self::class, 'onShutdown']);
+        self::maybeRotate(); // auto-clear once a week so the log can't pile up
         self::log('===== ' . ($_SERVER['REQUEST_METHOD'] ?? 'CLI') . ' ' . ($_SERVER['REQUEST_URI'] ?? '-') . ' =====');
         self::log('php ' . PHP_VERSION
             . ' · max_execution_time=' . (ini_get('max_execution_time') !== '' ? ini_get('max_execution_time') : '?') . 's'
@@ -111,6 +112,34 @@ class Debug
         $p = self::logPath();
         if ($p && is_file($p)) {
             @unlink($p);
+        }
+        // Reset the weekly-rotation window when manually cleared.
+        if ($p !== null) {
+            @file_put_contents($p . '.since', (string)time());
+        }
+    }
+
+    /**
+     * Delete the log automatically once it is older than a week, so it never
+     * piles up. A sidecar ".since" file's mtime marks when the current log began
+     * (it is only rewritten on rotation, not on every log line).
+     */
+    private static function maybeRotate(): void
+    {
+        $log = self::logPath();
+        if ($log === null) {
+            return;
+        }
+        $stamp = $log . '.since';
+        if (!is_file($stamp)) {
+            @file_put_contents($stamp, (string)time());
+            return;
+        }
+        if (time() - (int)@filemtime($stamp) > 7 * 86400) {
+            if (is_file($log)) {
+                @unlink($log);
+            }
+            @file_put_contents($stamp, (string)time()); // start a fresh week
         }
     }
 

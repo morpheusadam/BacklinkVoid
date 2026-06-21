@@ -156,6 +156,9 @@ class Engine
                 if ($onDone) {
                     $ms = isset($meta['start']) ? (int)round((microtime(true) - $meta['start']) * 1000) : 0;
                     $onDone($url, $code, $results[$url]['final'], $results[$url]['body'], $ms);
+                    // The callback consumed the body — free it so memory stays flat
+                    // even for 1000+ domains (don't hold every HTML page at once).
+                    $results[$url]['body'] = '';
                 }
                 curl_multi_remove_handle($mh, $ch);
                 curl_close($ch);
@@ -641,32 +644,34 @@ class Engine
         }
 
         if ($do_fetch) {
-            $urls = [];
-            foreach ($backlinks as $bl) {
+            // Index records by their URL, then process each page AS IT ARRIVES and
+            // let fetchMany free its body immediately — so memory stays flat even
+            // for 1000+ domains (the old "fetch all, then loop" held every HTML
+            // body at once and peaked ~186 MB at 494 domains → OOM at scale).
+            $byUrl = [];
+            foreach ($backlinks as $idx => $bl) {
                 if ($bl['source_url'] !== '') {
-                    $urls[] = $bl['source_url'];
+                    $byUrl[$bl['source_url']][] = $idx;
                 }
             }
-            $log('[fetch] live fetch: ' . count(array_unique($urls)) . ' url(s) · workers=' . $cfg['MAX_WORKERS']
+            $log('[fetch] live fetch: ' . count($byUrl) . ' url(s) · workers=' . $cfg['MAX_WORKERS']
                 . ' · timeout=' . $cfg['REQUEST_TIMEOUT'] . 's · deadline=' . $cfg['OVERALL_DEADLINE'] . 's');
-            $fetched = self::fetchMany($urls, $cfg, $onProgress ? function ($url, $status, $final, $body, $ms) use ($log) {
+            $fetchedIdx = [];
+            self::fetchMany(array_keys($byUrl), $cfg, function ($url, $status, $final, $body, $ms)
+                use (&$backlinks, &$byUrl, &$fetchedIdx, $cfg, $log) {
+                foreach ($byUrl[$url] as $idx) {
+                    self::extractSignals($backlinks[$idx], $status, $final, $body, $cfg);
+                    $fetchedIdx[$idx] = true;
+                }
                 $host = strtolower((string)parse_url($url, PHP_URL_HOST));
                 $log('[fetch] ' . str_pad($status > 0 ? (string)$status : 'ERR', 3) . '  ' . $host . ($ms ? '  (' . $ms . 'ms)' : ''));
-            } : null);
-            foreach ($backlinks as &$bl) {
-                if ($bl['source_url'] === '') {
-                    continue;
-                }
-                if (array_key_exists($bl['source_url'], $fetched)) {
-                    $r = $fetched[$bl['source_url']];
-                    self::extractSignals($bl, $r['status'], $r['final'], $r['body'], $cfg);
-                } else {
-                    // The overall deadline was hit before this URL completed.
-                    // It is still fully audited below (name/TLD-based signals).
-                    $bl['fetch_skipped'] = true;
+            });
+            foreach ($backlinks as $idx => $bl) {
+                // Not reached before the deadline → audited offline (name/TLD).
+                if (($bl['source_url'] ?? '') !== '' && empty($fetchedIdx[$idx])) {
+                    $backlinks[$idx]['fetch_skipped'] = true;
                 }
             }
-            unset($bl);
         }
 
         $before = count($backlinks);
