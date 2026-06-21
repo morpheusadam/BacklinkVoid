@@ -22,6 +22,30 @@ class View
             . '</nav>';
     }
 
+    /**
+     * Human sentence explaining the submitted-URLs → unique-rows collapse, e.g.
+     * "Submitted 462 URLs → 108 unique domains (354 duplicate URLs merged)."
+     * Shown on the building page and the report so the count is never unexplained.
+     */
+    public static function countLine($submitted, $unique, $merged, $per_url): string
+    {
+        $submitted = (int)$submitted;
+        $unique = (int)$unique;
+        $merged = (int)$merged;
+        if ($submitted <= 0) {
+            return '';
+        }
+        $u = $submitted === 1 ? 'URL' : 'URLs';
+        if ($per_url) {
+            $unit = $unique === 1 ? 'unique URL' : 'unique URLs';
+            $tail = $merged > 0 ? ' (' . $merged . ' exact-duplicate ' . ($merged === 1 ? 'URL' : 'URLs') . ' merged)' : '';
+            return 'Submitted ' . $submitted . ' ' . $u . ' → ' . $unique . ' ' . $unit . ' analysed' . $tail . '.';
+        }
+        $unit = $unique === 1 ? 'unique domain' : 'unique domains';
+        $tail = $merged > 0 ? ' (' . $merged . ' duplicate ' . ($merged === 1 ? 'URL' : 'URLs') . ' merged)' : '';
+        return 'Submitted ' . $submitted . ' ' . $u . ' → ' . $unique . ' ' . $unit . $tail . '.';
+    }
+
     /** The full results report: prospects table, avoid list, exports, disavow. */
     public static function report($r, $opts): string
     {
@@ -33,42 +57,24 @@ class View
         $target = Support::h($opts['target_url']);
         $profile = Support::h(implode(', ', array_slice($r['niche'], 0, 18)) ?: '—');
         $generated = date('Y-m-d H:i:s');
+        $debug_badge = Debug::badge();
+
+        // Input-collapse transparency (FIX 1/4): explain how the input list became
+        // the analysed count, and whether rows are per-domain or per-URL.
+        $per_url = !empty($opts['per_url']);
+        $count_line = self::countLine($opts['submitted'] ?? 0, $opts['unique'] ?? ($r['total'] ?? 0), $opts['merged'] ?? 0, $per_url);
+        $count_html = $count_line !== '' ? '<p class="muted small">' . Support::h($count_line) . '</p>' : '';
+        $checked_label = $per_url ? 'URLs checked' : 'Domains checked';
 
         $live = !empty($r['live']);
-        $prospect_rows = '';
-        $i = 0;
-        foreach ($prospects as $bl) {
-            $i++;
-            $url = Support::h($bl['final_url'] ?: $bl['source_url']);
-            $dom = Support::h($bl['registrable_domain'] ?: $bl['source_url']);
-            $title = Support::h($bl['title']);
-            $rel = round(($bl['factor_values']['relevance'] ?? 0) * 100);
-            $auth = round(($bl['factor_values']['authority'] ?? 0) * 100);
-            $badge = $bl['score'] >= 70 ? 'good' : ($bl['score'] >= 50 ? 'ok' : 'warn');
-            $friendly_sort = $bl['link_friendly'] ? 1 : 0;
-            $friendly = $bl['link_friendly']
-                ? '<span class="tag yes">guest&nbsp;post</span>'
-                : '<span class="tag no">—</span>';
-            // Flag domains the deadline could not live-fetch (scored offline).
-            $unv = ($live && !$bl['reachable'])
-                ? ' <span class="unv" title="Not live-fetched within the time limit — scored on name/TLD only">· not verified</span>'
-                : '';
-            $score = rtrim(rtrim(number_format($bl['score'], 1), '0'), '.');
-            $prospect_rows .= '
-        <tr>
-          <td class="rank">' . $i . '</td>
-          <td class="src"><a href="' . $url . '" target="_blank" rel="noopener nofollow">' . $dom . '</a>
-            <div class="muted small">' . $title . $unv . '</div></td>
-          <td data-sort="' . $bl['score'] . '"><span class="score ' . $badge . '">' . $score . '</span></td>
-          <td data-sort="' . $rel . '">' . $rel . '%</td>
-          <td data-sort="' . $auth . '">' . $auth . '%</td>
-          <td data-sort="' . $friendly_sort . '">' . $friendly . '</td>
-          <td class="small muted">' . Support::h(Engine::whyStr($bl)) . '</td>
-        </tr>';
-        }
-        if ($prospect_rows === '') {
-            $prospect_rows = '<tr><td colspan="7" class="muted" style="padding:1.5rem;text-align:center">No suitable prospects found.</td></tr>';
-        }
+        $i = count($prospects);   // "Good prospects" card + initial "Showing 0 of N"
+
+        // FIX (render weight) — the shell ships NO prospect rows inline. Embedding
+        // the whole dataset (~135 KB) stalled the browser's HTML parse BEFORE
+        // report.js could run (the report.js request lagged ~76 s in the live log).
+        // Rows are now fetched in small slices from ?report=data and rendered
+        // incrementally, so the first response stays tiny (<~20 KB). The compact
+        // row shape lives in View::prospectRows(), reused by the data endpoint.
 
         $avoid_sorted = $avoid;
         usort($avoid_sorted, fn($a, $b) => strcmp($a['registrable_domain'], $b['registrable_domain']));
@@ -174,192 +180,6 @@ class View
             ? $total . ' domains analysed — ' . $fetched_n . ' live-checked, ' . $offline_n . ' by name/TLD only'
             : $total . ' domains analysed (offline name/TLD mode)';
 
-        // PDF/CSV/Excel/disavow client-side helpers (literal em dash for outreach).
-        $pdf_js = <<<'JS'
-function pdfText(el){ return el ? el.innerText.trim() : ''; }
-var DASH = '—';
-
-function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function downloadBlob(content, filename, mime){
-  const blob = new Blob([content], {type: mime});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-}
-
-// Which rows feed an export. 'current' = every row in its on-screen order
-// (so sorting carries through); 'guest' = only guest-post-friendly rows.
-function exportScope(){ const s = document.getElementById('scope'); return s ? s.value : 'current'; }
-function scopedRows(){
-  let rows = Array.prototype.filter.call(document.querySelectorAll('#t tbody tr'), function(r){return r.children.length===7;});
-  if(exportScope()==='guest') rows = rows.filter(function(r){ return r.children[5].innerText.trim() !== DASH; });
-  return rows;
-}
-
-function showTab(name, btn){
-  Array.prototype.forEach.call(document.querySelectorAll('.tabpanel'), function(p){ p.classList.remove('active'); });
-  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(t){ t.classList.remove('active'); });
-  const panel = document.getElementById('tab-'+name);
-  if(panel) panel.classList.add('active');
-  if(btn) btn.classList.add('active');
-}
-
-function generatePDF(){
-  if(!(window.jspdf && window.jspdf.jsPDF)){ window.print(); return; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({unit:'pt', format:'a4'});
-  const W = doc.internal.pageSize.getWidth();
-  const H = doc.internal.pageSize.getHeight();
-  const M = 40;
-  const guestOnly = exportScope()==='guest';
-  const site = pdfText(document.querySelector('header strong'));
-  const gen  = pdfText(document.getElementById('gen'));
-  const cards = Array.prototype.map.call(document.querySelectorAll('.cards .n'), function(e){return e.innerText.trim();});
-  const summary = 'Domains checked: '+(cards[0]||'')+'    Good prospects: '+(cards[1]||'')+
-                  '    Guest-post friendly: '+(cards[2]||'')+'    Avg score: '+(cards[3]||'')+
-                  '    Avoid: '+(cards[4]||'');
-  function footer(){
-    doc.setFont('times','italic'); doc.setFontSize(8); doc.setTextColor(140);
-    doc.text('Backlink Prospect Report - '+site, M, H-18);
-    doc.text('Page '+doc.internal.getNumberOfPages(), W-M, H-18, {align:'right'});
-  }
-  doc.setFont('times','bold'); doc.setFontSize(22); doc.setTextColor(20);
-  doc.text(guestOnly ? 'Backlink Prospect Report (Guest-post only)' : 'Backlink Prospect Report', M, 56);
-  doc.setDrawColor(30); doc.setLineWidth(1.2); doc.line(M, 66, W-M, 66);
-  doc.setFont('times','normal'); doc.setFontSize(10); doc.setTextColor(90);
-  doc.text('Your site: '+site, M, 86);
-  doc.text(gen, M, 100);
-  doc.setFontSize(9); doc.text(summary, M, 116);
-  const prows = scopedRows().map(function(tr){
-      const c = tr.children;
-      const a = c[1].querySelector('a');
-      const domain = (a ? a.innerText : c[1].innerText).trim();
-      const outreach = c[5].innerText.trim()===DASH ? '' : 'Guest post';
-      return [c[0].innerText.trim(), domain, c[2].innerText.trim(),
-              c[3].innerText.trim(), c[4].innerText.trim(), outreach, c[6].innerText.trim()];
-    });
-  doc.autoTable({
-    startY: 130,
-    head: [['#','Domain','Score','Rel %','Auth %','Outreach','Why (top factors)']],
-    body: prows,
-    theme: 'grid',
-    styles: {font:'times', fontSize:9, textColor:[33,33,33], cellPadding:4, overflow:'linebreak', lineColor:[205,205,205], lineWidth:0.5},
-    headStyles: {fillColor:[20,30,55], textColor:255, fontStyle:'bold', halign:'left'},
-    alternateRowStyles: {fillColor:[246,248,250]},
-    columnStyles: {0:{cellWidth:26, halign:'center'}, 1:{cellWidth:120},
-                   2:{cellWidth:38, halign:'center'}, 3:{cellWidth:40, halign:'center'},
-                   4:{cellWidth:42, halign:'center'}, 5:{cellWidth:56}, 6:{cellWidth:'auto'}},
-    margin: {left:M, right:M, bottom:34},
-    didDrawPage: footer
-  });
-  if(!guestOnly){
-    const arows = Array.prototype.filter.call(document.querySelectorAll('#avoid tbody tr'), function(r){return r.children.length===2;})
-      .map(function(tr){ return [tr.children[0].innerText.trim(), tr.children[1].innerText.trim()]; });
-    if(arows.length){
-      let y = doc.lastAutoTable.finalY + 26;
-      if(y > H-90){ doc.addPage(); y=56; }
-      doc.setFont('times','bold'); doc.setFontSize(14); doc.setTextColor(150,40,40);
-      doc.text('Avoid - unsafe or unusable link sources', M, y);
-      doc.autoTable({
-        startY: y+10,
-        head: [['Domain','Reason']],
-        body: arows,
-        theme: 'grid',
-        styles: {font:'times', fontSize:9, textColor:[33,33,33], cellPadding:4, overflow:'linebreak', lineColor:[205,205,205], lineWidth:0.5},
-        headStyles: {fillColor:[120,30,30], textColor:255, fontStyle:'bold'},
-        columnStyles: {0:{cellWidth:175}, 1:{cellWidth:'auto'}},
-        margin: {left:M, right:M, bottom:34},
-        didDrawPage: footer
-      });
-    }
-  }
-  doc.save(guestOnly ? 'guest-post-prospects.pdf' : 'backlink-prospects.pdf');
-}
-
-function downloadCSV(){
-  const rows = [['rank','domain','score','relevance_%','authority_%','guest_post','why']];
-  scopedRows().forEach(function(tr){
-    const c = tr.children;
-    const a = c[1].querySelector('a');
-    rows.push([c[0].innerText.trim(), (a?a.innerText:c[1].innerText).trim(), c[2].innerText.trim(),
-               c[3].innerText.trim().replace('%',''), c[4].innerText.trim().replace('%',''),
-               c[5].innerText.trim()===DASH?'no':'yes', c[6].innerText.trim()]);
-  });
-  const csv = rows.map(function(r){return r.map(function(x){return '"'+String(x).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
-  downloadBlob('﻿'+csv, exportScope()==='guest'?'guest-post-prospects.csv':'prospects.csv', 'text/csv;charset=utf-8');
-}
-
-// Excel: an HTML table tagged as a worksheet — opens natively in Excel,
-// LibreOffice Calc and Google Sheets, no external library or network needed.
-function downloadExcel(){
-  let body = '';
-  scopedRows().forEach(function(tr){
-    const c = tr.children;
-    const a = c[1].querySelector('a');
-    const domain = (a?a.innerText:c[1].innerText).trim();
-    body += '<tr><td>'+esc(c[0].innerText.trim())+'</td><td>'+esc(domain)+'</td><td>'+
-      esc(c[2].innerText.trim())+'</td><td>'+esc(c[3].innerText.trim().replace('%',''))+'</td><td>'+
-      esc(c[4].innerText.trim().replace('%',''))+'</td><td>'+(c[5].innerText.trim()===DASH?'no':'yes')+
-      '</td><td>'+esc(c[6].innerText.trim())+'</td></tr>';
-  });
-  const head = '<tr><th>#</th><th>Domain</th><th>Score</th><th>Relevance %</th><th>Authority %</th><th>Guest post</th><th>Why</th></tr>';
-  const html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">'+
-    '<head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet>'+
-    '<x:Name>Prospects</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet>'+
-    '</x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body><table border="1">'+
-    head+body+'</table></body></html>';
-  downloadBlob('﻿'+html, exportScope()==='guest'?'guest-post-prospects.xls':'prospects.xls', 'application/vnd.ms-excel');
-}
-
-function downloadDisavow(){
-  const el = document.getElementById('disavowText');
-  if(el) downloadBlob(el.value, 'disavow.txt', 'text/plain;charset=utf-8');
-}
-function copyDisavow(){
-  const ta = document.getElementById('disavowText');
-  if(!ta) return;
-  ta.focus(); ta.select();
-  try { ta.setSelectionRange(0, 999999); } catch(e){}
-  try { document.execCommand('copy'); } catch(e){}
-  if(navigator.clipboard){ navigator.clipboard.writeText(ta.value).catch(function(){}); }
-  const btn = document.getElementById('copyBtn');
-  if(btn){ const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(function(){ btn.textContent = t; }, 1500); }
-}
-
-function sortT(col, type){
-  const tb = document.querySelector('#t tbody');
-  const rows = Array.prototype.filter.call(tb.querySelectorAll('tr'), function(r){return r.children.length===7;});
-  const dir = tb.getAttribute('data-dir')==='asc' ? -1 : 1;
-  tb.setAttribute('data-dir', dir===1?'asc':'desc');
-  rows.sort(function(a,b){
-    let x=a.children[col].getAttribute('data-sort')??a.children[col].innerText;
-    let y=b.children[col].getAttribute('data-sort')??b.children[col].innerText;
-    if(type==='num'){ return ((parseFloat(x)||0)-(parseFloat(y)||0))*dir; }
-    return x.localeCompare(y)*dir;
-  });
-  rows.forEach(function(r){ tb.appendChild(r); });
-}
-
-// Sort to an explicit column + direction (driven by the "Sort by" dropdown).
-function sortTo(col, type, dir){
-  const tb = document.querySelector('#t tbody');
-  const rows = Array.prototype.filter.call(tb.querySelectorAll('tr'), function(r){return r.children.length===7;});
-  rows.sort(function(a,b){
-    let x=a.children[col].getAttribute('data-sort')??a.children[col].innerText;
-    let y=b.children[col].getAttribute('data-sort')??b.children[col].innerText;
-    if(type==='num'){ return ((parseFloat(x)||0)-(parseFloat(y)||0))*dir; }
-    return String(x).localeCompare(String(y))*dir;
-  });
-  rows.forEach(function(r){ tb.appendChild(r); });
-}
-function applySort(){
-  const sel = document.getElementById('sortby'); if(!sel) return;
-  const parts = sel.value.split('-');
-  const col = parseInt(parts[0], 10), dir = parts[1]==='asc' ? 1 : -1;
-  sortTo(col, col===1 ? 'str' : 'num', dir);
-}
-JS;
 
         return <<<HTML
 <!DOCTYPE html>
@@ -395,6 +215,9 @@ JS;
   .warnbar code { background:#f6ecca; }
   .sortbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:4px 0 10px; }
   .unv { color:#bd5b00; font-weight:600; }
+  .urlbadge { display:inline-block; font-size:11px; font-weight:600; color:#135e96;
+              background:#e9f2fb; border:1px solid #bcdcf5; border-radius:10px;
+              padding:0 7px; margin-left:6px; vertical-align:1px; white-space:nowrap; }
   table { width:100%; border-collapse:collapse; background:#fff;
           border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid #f0f0f1;
@@ -440,24 +263,26 @@ JS;
 </style>
 </head>
 <body>
+{$debug_badge}
 <div class="wrap">
   <header>
     <p><a href="?" class="backbtn">&larr; New analysis</a></p>
     <h1>Backlink Prospects</h1>
+    {$count_html}
     <p class="muted small">Your site: <strong>{$target}</strong></p>
     <p class="muted small">Topic profile: {$profile}</p>
     <p class="muted small" id="gen">Generated {$generated}</p>
   </header>
 
   <nav class="tabs">
-    <button type="button" class="tab active" onclick="showTab('prospects', this)">Prospects</button>
-    <button type="button" class="tab" onclick="showTab('disavow', this)">For Removal / Disavow ({$disavow_count})</button>
+    <button type="button" class="tab active" data-tab="prospects">Prospects</button>
+    <button type="button" class="tab" data-tab="disavow">For Removal / Disavow ({$disavow_count})</button>
   </nav>
 
   <section id="tab-prospects" class="tabpanel active">
     {$fetch_banner}
     <section class="cards">
-      <div><div class="n">{$total}</div><div class="l">Domains checked</div></div>
+      <div><div class="n">{$total}</div><div class="l">{$checked_label}</div></div>
       <div><div class="n" style="color:var(--good)">{$i}</div><div class="l">Good prospects</div></div>
       <div><div class="n" style="color:var(--accent)">{$friendly_n}</div><div class="l">Guest-post friendly</div></div>
       <div><div class="n">{$avg}</div><div class="l">Avg score</div></div>
@@ -467,30 +292,42 @@ JS;
     <h2>Best prospects</h2>
     <div class="sortbar">
       <label class="scopelbl">Sort by
-        <select id="sortby" onchange="applySort()">
-          <option value="2-desc">Score (high → low)</option>
-          <option value="2-asc">Score (low → high)</option>
-          <option value="1-asc">Domain (A → Z)</option>
-          <option value="3-desc">Relevance (high → low)</option>
-          <option value="4-desc">Authority (high → low)</option>
-          <option value="5-desc">Guest-post first</option>
-          <option value="0-asc">Rank (default)</option>
+        <select id="sortby">
+          <option value="s-desc">Score (high → low)</option>
+          <option value="s-asc">Score (low → high)</option>
+          <option value="d-asc">Domain (A → Z)</option>
+          <option value="rel-desc">Relevance (high → low)</option>
+          <option value="au-desc">Authority (high → low)</option>
+          <option value="g-desc">Guest-post first</option>
+          <option value="o-asc">Rank (default)</option>
         </select>
       </label>
-      <span class="muted small">{$total} domains analysed · click any column header to sort too</span>
+      <label class="scopelbl">Show
+        <select id="pagesize">
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="0">All</option>
+        </select>
+      </label>
+      <span class="muted small" id="showing">Showing 0 of {$i}</span>
+      <span class="muted small">· click any column header to sort the full set</span>
     </div>
+    <noscript><p class="muted small">JavaScript is required to view the ranked prospects (loaded client-side for speed). Exports and the full report data are available with JavaScript on.</p></noscript>
     <table id="t">
       <thead><tr>
-        <th onclick="sortT(0,'num')">#</th>
-        <th onclick="sortT(1,'str')">Domain</th>
-        <th onclick="sortT(2,'num')">Score</th>
-        <th onclick="sortT(3,'num')">Relevance</th>
-        <th onclick="sortT(4,'num')">Authority</th>
-        <th onclick="sortT(5,'str')">Outreach</th>
-        <th onclick="sortT(6,'str')">Why</th>
+        <th data-col="o" data-type="num">#</th>
+        <th data-col="d" data-type="str">Domain</th>
+        <th data-col="s" data-type="num">Score</th>
+        <th data-col="rel" data-type="num">Relevance</th>
+        <th data-col="au" data-type="num">Authority</th>
+        <th data-col="g" data-type="num">Outreach</th>
+        <th data-col="w" data-type="str">Why</th>
       </tr></thead>
-      <tbody>{$prospect_rows}</tbody>
+      <tbody id="prows"><tr id="prows-loading"><td colspan="7" class="muted" style="padding:1.5rem;text-align:center">Rendering {$i} prospects…</td></tr></tbody>
     </table>
+    <div class="bar" style="margin-top:10px">
+      <button class="btn secondary" id="loadMore" type="button" style="display:none">Load more</button>
+    </div>
 
     <h2 class="danger">Avoid ({$avoidcount})</h2>
     <table id="avoid"><thead><tr><th>Domain</th><th>Reason</th></tr></thead>
@@ -503,9 +340,9 @@ JS;
           <option value="guest">Guest-post only</option>
         </select>
       </label>
-      <button class="btn" onclick="generatePDF()">PDF</button>
-      <button class="btn secondary" onclick="downloadExcel()">Excel</button>
-      <button class="btn secondary" onclick="downloadCSV()">CSV</button>
+      <button class="btn" id="btnPdf" type="button">PDF</button>
+      <button class="btn secondary" id="btnExcel" type="button">Excel</button>
+      <button class="btn secondary" id="btnCsv" type="button">CSV</button>
     </div>
   </section>
 
@@ -530,27 +367,303 @@ JS;
       <tbody>{$review_rows}</tbody></table>
 
     <h2>Google Disavow file <span class="muted small">(disavow tier only)</span></h2>
+    <p class="muted small"><strong>Disavow is always domain-level</strong> (one <code>domain:</code> line per
+      domain, de-duplicated) — even when per-URL analysis is on, because per-URL disavow lines are harmful.</p>
     <p class="muted small">Download and upload in
       <a href="https://search.google.com/search-console/disavow-links" target="_blank" rel="noopener">Search Console &rsaquo; Disavow Links</a>.
       <strong>Review every entry first</strong> — disavowing healthy links can hurt your rankings.</p>
     <textarea id="disavowText" class="disavow" readonly spellcheck="false">{$disavow_textarea}</textarea>
     <div class="bar">
-      <button class="btn" onclick="downloadDisavow()">Download disavow.txt</button>
-      <button class="btn secondary" id="copyBtn" onclick="copyDisavow()">Copy to clipboard</button>
+      <button class="btn" id="btnDisavow" type="button">Download disavow.txt</button>
+      <button class="btn secondary" id="copyBtn" type="button">Copy to clipboard</button>
     </div>
   </section>
 </div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-<script>
-{$pdf_js}
-</script>
+<!-- The shell carries NO row data. report.js fetches rows in slices from
+     ?report=data and renders them incrementally, so this first response is tiny. -->
+<script src="?asset=report.js"></script>
 </body>
 </html>
 HTML;
     }
 
-    /** The input form with the full-screen loading overlay + live timer. */
+    /**
+     * Compact prospect rows for the ?report=data slice endpoint. One small object
+     * per prospect (display + export fields). 'o' is the default-order index so a
+     * "Rank (default)" sort can be restored. Reused by Router::reportData().
+     */
+    public static function prospectRows($r): array
+    {
+        $live = !empty($r['live']);
+        $rows = [];
+        $o = 0;
+        foreach ($r['prospects'] as $bl) {
+            $rows[] = [
+                'o'   => $o++,
+                'd'   => $bl['registrable_domain'] ?: $bl['source_url'],
+                'u'   => $bl['final_url'] ?: $bl['source_url'],
+                't'   => (string)$bl['title'],
+                's'   => round((float)$bl['score'], 1),
+                'rel' => (int)round(($bl['factor_values']['relevance'] ?? 0) * 100),
+                'au'  => (int)round(($bl['factor_values']['authority'] ?? 0) * 100),
+                'g'   => $bl['link_friendly'] ? 1 : 0,
+                'w'   => Engine::whyStr($bl),
+                'uc'  => (int)($bl['url_count'] ?? 1),
+                'nv'  => ($live && !$bl['reachable']) ? 1 : 0,
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * The report page's interactive logic, served as an EXTERNAL file via
+     * ?asset=report.js. It NO LONGER reads inline data — it fetches rows in small
+     * slices from ?report=data, renders them incrementally (chunks of 25 via
+     * requestAnimationFrame so the main thread never freezes), and updates the
+     * "Showing X of N" counter. Sorting re-fetches the full set sorted server-side;
+     * exports fetch the full set (limit=0). Pure static JS (no PHP interpolation).
+     */
+    public static function reportJs(): string
+    {
+        return <<<'JS'
+(function(){
+  'use strict';
+  function $(id){ return document.getElementById(id); }
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function fmtScore(s){ var n=Math.round((Number(s)||0)*10)/10; var str=''+n; return str.indexOf('.')>=0?str.replace(/\.?0+$/,''):str; }
+  function log(m){ if(window.console&&console.log){ console.log('[report] '+m); } }
+  function errMsg(e){ return (e&&e.name==='AbortError')?'timed out':(e&&e.message?e.message:(''+e)); }
+  var DASH='—';
+  var tb = document.querySelector('#prows');
+  var PAGE = 50;        // slice size (0 = all)
+  var sort = 's-desc';  // current sort (applied server-side)
+  var total = 0;        // total prospects (from the endpoint)
+  var offset = 0;       // rows loaded so far
+  var perUrl = false;
+  var busy = false;
+  var raf = window.requestAnimationFrame || function(f){ return setTimeout(f, 16); };
+
+  function rowHtml(p, rank){
+    var badge = p.s>=70?'good':(p.s>=50?'ok':'warn');
+    var friendly = p.g ? '<span class="tag yes">guest&nbsp;post</span>' : '<span class="tag no">'+DASH+'</span>';
+    var unv = p.nv ? ' <span class="unv" title="Not live-fetched within the time limit — scored on name/TLD only">· not verified</span>' : '';
+    var ub = (!perUrl && p.uc>1) ? ' <span class="urlbadge" title="'+p.uc+' submitted URLs map to this domain (merged for analysis)">'+p.uc+' URLs</span>' : '';
+    return '<tr>'
+      + '<td class="rank">'+rank+'</td>'
+      + '<td class="src"><a href="'+esc(p.u)+'" target="_blank" rel="noopener nofollow">'+esc(p.d)+'</a>'+ub
+      + '<div class="muted small">'+esc(p.t)+unv+'</div></td>'
+      + '<td><span class="score '+badge+'">'+esc(fmtScore(p.s))+'</span></td>'
+      + '<td>'+p.rel+'%</td>'
+      + '<td>'+p.au+'%</td>'
+      + '<td>'+friendly+'</td>'
+      + '<td class="small muted">'+esc(p.w)+'</td>'
+      + '</tr>';
+  }
+
+  function setShowing(){ var s=$('showing'); if(s){ s.textContent='Showing '+Math.min(offset,total)+' of '+total; } }
+  function updateMore(){ var m=$('loadMore'); if(!m) return; if(offset<total){ m.style.display=''; m.textContent='Load more ('+(total-offset)+' left)'; } else { m.style.display='none'; } }
+
+  // Incremental, non-blocking append (chunks of 25 via rAF) so the main thread
+  // never freezes, however many rows arrive.
+  function appendChunked(rows, startRank, done){
+    var i=0;
+    (function chunk(){
+      try{
+        var end=Math.min(i+25, rows.length), html='';
+        for(; i<end; i++){ html += rowHtml(rows[i], startRank+i+1); }
+        if(html){ tb.insertAdjacentHTML('beforeend', html); }
+        log('rendered '+(startRank+i)+' of '+total);
+        if(i<rows.length){ raf(chunk); } else if(done){ done(); }
+      }catch(e){ busy=false; showError('render error: '+errMsg(e)); }
+    })();
+  }
+
+  function fetchSlice(off, limit){
+    var url='?report=data&offset='+off+'&limit='+limit+'&sort='+encodeURIComponent(sort);
+    log('fetch '+url);
+    var ctrl=window.AbortController?new AbortController():null;
+    var to=ctrl?setTimeout(function(){ if(ctrl) ctrl.abort(); },20000):null;
+    var opt={credentials:'same-origin'}; if(ctrl){ opt.signal=ctrl.signal; }
+    return fetch(url,opt).then(function(r){ if(to)clearTimeout(to); return r.text(); }, function(e){ if(to)clearTimeout(to); throw e; })
+      .then(function(t){ var d; try{ d=JSON.parse(t); }catch(e){ throw new Error('bad JSON from ?report=data'); } if(!d||!d.ok){ throw new Error(d&&d.error?d.error:'data endpoint error'); } return d; });
+  }
+
+  function loadFirst(){
+    if(busy) return; busy=true;
+    tb.innerHTML=''; offset=0;
+    fetchSlice(0, (PAGE===0?0:PAGE)).then(function(d){
+      total=d.total; perUrl=!!d.per_url;
+      var rows=d.rows||[];
+      if(!rows.length){ tb.innerHTML='<tr><td colspan="7" class="muted" style="padding:1.5rem;text-align:center">No suitable prospects found.</td></tr>'; setShowing(); updateMore(); busy=false; return; }
+      appendChunked(rows, 0, function(){ offset=rows.length; setShowing(); updateMore(); busy=false; });
+    }).catch(function(e){ busy=false; showError('Could not load rows: '+errMsg(e)); });
+  }
+  function loadMore(){
+    if(busy || offset>=total) return; busy=true;
+    var start=offset;
+    fetchSlice(start, (PAGE===0?0:PAGE)).then(function(d){
+      total=d.total; perUrl=!!d.per_url;
+      var rows=d.rows||[];
+      appendChunked(rows, start, function(){ offset=start+rows.length; setShowing(); updateMore(); busy=false; });
+    }).catch(function(e){ busy=false; showError('Could not load more: '+errMsg(e)); });
+  }
+
+  function showError(msg){
+    if(window.console&&console.error){ console.error('[report] '+msg); }
+    var sec=$('tab-prospects'); if(!sec) return;
+    var bar=$('reportErr');
+    if(!bar){ bar=document.createElement('div'); bar.id='reportErr'; bar.className='warnbar'; sec.insertBefore(bar, sec.firstChild); }
+    bar.innerHTML = esc(msg)+' <button class="btn" id="retryRows" type="button">Retry</button>';
+    var rb=$('retryRows'); if(rb){ rb.onclick=function(){ if(bar.parentNode){ bar.parentNode.removeChild(bar); } loadFirst(); }; }
+  }
+
+  // ---- tabs ----
+  function showTab(name, btn){
+    var ps=document.querySelectorAll('.tabpanel'); for(var i=0;i<ps.length;i++){ ps[i].classList.remove('active'); }
+    var ts=document.querySelectorAll('.tab'); for(var j=0;j<ts.length;j++){ ts[j].classList.remove('active'); }
+    var panel=$('tab-'+name); if(panel){ panel.classList.add('active'); }
+    if(btn){ btn.classList.add('active'); }
+  }
+
+  // ---- exports: fetch the FULL set (limit=0) in the current sort, then build ----
+  function exportScope(){ var s=$('scope'); return s?s.value:'current'; }
+  function fetchAll(){ return fetchSlice(0, 0).then(function(d){ var rows=d.rows||[]; if(exportScope()==='guest'){ rows=rows.filter(function(p){return p.g;}); } return rows; }); }
+  function downloadBlob(content, filename, mime){ var b=new Blob([content],{type:mime}); var u=URL.createObjectURL(b); var a=document.createElement('a'); a.href=u; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u); }
+  function pdfText(el){ return el?el.innerText.trim():''; }
+
+  function downloadCSV(){ fetchAll().then(function(rows){
+    var out=[['rank','domain','score','relevance_%','authority_%','guest_post','why']];
+    rows.forEach(function(p,i){ out.push([i+1,p.d,fmtScore(p.s),p.rel,p.au,p.g?'yes':'no',p.w]); });
+    var csv=out.map(function(r){ return r.map(function(x){ return '"'+String(x).replace(/"/g,'""')+'"'; }).join(','); }).join('\n');
+    downloadBlob('﻿'+csv, exportScope()==='guest'?'guest-post-prospects.csv':'prospects.csv','text/csv;charset=utf-8');
+  }).catch(function(e){ showError('CSV export failed: '+errMsg(e)); }); }
+
+  function downloadExcel(){ fetchAll().then(function(rows){
+    var body=''; rows.forEach(function(p,i){ body+='<tr><td>'+(i+1)+'</td><td>'+esc(p.d)+'</td><td>'+esc(fmtScore(p.s))+'</td><td>'+p.rel+'</td><td>'+p.au+'</td><td>'+(p.g?'yes':'no')+'</td><td>'+esc(p.w)+'</td></tr>'; });
+    var head='<tr><th>#</th><th>Domain</th><th>Score</th><th>Relevance %</th><th>Authority %</th><th>Guest post</th><th>Why</th></tr>';
+    var html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Prospects</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body><table border="1">'+head+body+'</table></body></html>';
+    downloadBlob('﻿'+html, exportScope()==='guest'?'guest-post-prospects.xls':'prospects.xls','application/vnd.ms-excel');
+  }).catch(function(e){ showError('Excel export failed: '+errMsg(e)); }); }
+
+  var JSPDF_URLS=['https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js','https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'];
+  function loadScript(src){ return new Promise(function(res,rej){ var s=document.createElement('script'); s.src=src; s.async=true; s.onload=function(){res();}; s.onerror=function(){rej(new Error('load '+src));}; document.head.appendChild(s); }); }
+  function ensureJsPDF(){ if(window.jspdf&&window.jspdf.jsPDF){ return Promise.resolve(); } return loadScript(JSPDF_URLS[0]).then(function(){ return loadScript(JSPDF_URLS[1]); }); }
+  function generatePDF(){ Promise.all([ensureJsPDF(), fetchAll()]).then(function(res){ doGeneratePDF(res[1]); }).catch(function(){ window.print(); }); }
+  function doGeneratePDF(rows){
+    if(!(window.jspdf&&window.jspdf.jsPDF)){ window.print(); return; }
+    var jsPDF=window.jspdf.jsPDF; var doc=new jsPDF({unit:'pt',format:'a4'});
+    var W=doc.internal.pageSize.getWidth(),H=doc.internal.pageSize.getHeight(),M=40;
+    var guestOnly=exportScope()==='guest';
+    var site=pdfText(document.querySelector('header strong')); var gen=pdfText($('gen'));
+    var cards=Array.prototype.map.call(document.querySelectorAll('.cards .n'),function(e){ return e.innerText.trim(); });
+    var summary='Domains checked: '+(cards[0]||'')+'    Good prospects: '+(cards[1]||'')+'    Guest-post friendly: '+(cards[2]||'')+'    Avg score: '+(cards[3]||'')+'    Avoid: '+(cards[4]||'');
+    function footer(){ doc.setFont('times','italic'); doc.setFontSize(8); doc.setTextColor(140); doc.text('Backlink Prospect Report - '+site,M,H-18); doc.text('Page '+doc.internal.getNumberOfPages(),W-M,H-18,{align:'right'}); }
+    doc.setFont('times','bold'); doc.setFontSize(22); doc.setTextColor(20);
+    doc.text(guestOnly?'Backlink Prospect Report (Guest-post only)':'Backlink Prospect Report',M,56);
+    doc.setDrawColor(30); doc.setLineWidth(1.2); doc.line(M,66,W-M,66);
+    doc.setFont('times','normal'); doc.setFontSize(10); doc.setTextColor(90);
+    doc.text('Your site: '+site,M,86); doc.text(gen,M,100); doc.setFontSize(9); doc.text(summary,M,116);
+    var prows=rows.map(function(p,i){ return [String(i+1),p.d,fmtScore(p.s),String(p.rel),String(p.au),p.g?'Guest post':'',p.w]; });
+    doc.autoTable({ startY:130, head:[['#','Domain','Score','Rel %','Auth %','Outreach','Why (top factors)']], body:prows, theme:'grid',
+      styles:{font:'times',fontSize:9,textColor:[33,33,33],cellPadding:4,overflow:'linebreak',lineColor:[205,205,205],lineWidth:0.5},
+      headStyles:{fillColor:[20,30,55],textColor:255,fontStyle:'bold',halign:'left'}, alternateRowStyles:{fillColor:[246,248,250]},
+      columnStyles:{0:{cellWidth:26,halign:'center'},1:{cellWidth:120},2:{cellWidth:38,halign:'center'},3:{cellWidth:40,halign:'center'},4:{cellWidth:42,halign:'center'},5:{cellWidth:56},6:{cellWidth:'auto'}},
+      margin:{left:M,right:M,bottom:34}, didDrawPage:footer });
+    if(!guestOnly){
+      var arows=Array.prototype.filter.call(document.querySelectorAll('#avoid tbody tr'),function(r){ return r.children.length===2; }).map(function(tr){ return [tr.children[0].innerText.trim(),tr.children[1].innerText.trim()]; });
+      if(arows.length){ var y=doc.lastAutoTable.finalY+26; if(y>H-90){ doc.addPage(); y=56; }
+        doc.setFont('times','bold'); doc.setFontSize(14); doc.setTextColor(150,40,40); doc.text('Avoid - unsafe or unusable link sources',M,y);
+        doc.autoTable({ startY:y+10, head:[['Domain','Reason']], body:arows, theme:'grid',
+          styles:{font:'times',fontSize:9,textColor:[33,33,33],cellPadding:4,overflow:'linebreak',lineColor:[205,205,205],lineWidth:0.5},
+          headStyles:{fillColor:[120,30,30],textColor:255,fontStyle:'bold'}, columnStyles:{0:{cellWidth:175},1:{cellWidth:'auto'}}, margin:{left:M,right:M,bottom:34}, didDrawPage:footer }); }
+    }
+    doc.save(guestOnly?'guest-post-prospects.pdf':'backlink-prospects.pdf');
+  }
+
+  // ---- disavow (server-rendered textarea, full set, domain-level) ----
+  function downloadDisavow(){ var el=$('disavowText'); if(el){ downloadBlob(el.value,'disavow.txt','text/plain;charset=utf-8'); } }
+  function copyDisavow(){ var ta=$('disavowText'); if(!ta) return; ta.focus(); ta.select(); try{ ta.setSelectionRange(0,999999); }catch(e){} try{ document.execCommand('copy'); }catch(e){} if(navigator.clipboard){ navigator.clipboard.writeText(ta.value).catch(function(){}); } var btn=$('copyBtn'); if(btn){ var t=btn.textContent; btn.textContent='Copied!'; setTimeout(function(){ btn.textContent=t; },1500); } }
+
+  // ---- wire events (no inline handlers → CSP-safe) ----
+  function on(id,ev,fn){ var e=$(id); if(e){ e.addEventListener(ev,fn); } }
+  function boot(){
+    try{
+      var tabs=document.querySelectorAll('.tab');
+      for(var i=0;i<tabs.length;i++){ (function(t){ t.addEventListener('click',function(){ showTab(t.getAttribute('data-tab'),t); }); })(tabs[i]); }
+      var ths=document.querySelectorAll('#t thead th');
+      for(var k=0;k<ths.length;k++){ (function(th){
+        var f=th.getAttribute('data-col'); if(!f) return;
+        th.addEventListener('click',function(){
+          var dir=(th.getAttribute('data-dir')==='desc')?'asc':'desc';
+          for(var m=0;m<ths.length;m++){ ths[m].removeAttribute('data-dir'); }
+          th.setAttribute('data-dir',dir);
+          sort=f+'-'+dir; var sb=$('sortby'); if(sb){ sb.value=sort; }
+          loadFirst();
+        });
+      })(ths[k]); }
+      on('sortby','change',function(){ sort=$('sortby').value||'s-desc'; loadFirst(); });
+      on('pagesize','change',function(){ var v=parseInt($('pagesize').value,10); PAGE=isNaN(v)?50:v; loadFirst(); });
+      on('loadMore','click',loadMore);
+      on('btnPdf','click',generatePDF);
+      on('btnExcel','click',downloadExcel);
+      on('btnCsv','click',downloadCSV);
+      on('btnDisavow','click',downloadDisavow);
+      on('copyBtn','click',copyDisavow);
+      log('boot — fetching first slice');
+      loadFirst();
+    }catch(e){ showError('init error: '+errMsg(e)); }
+  }
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',boot); } else { boot(); }
+})();
+JS;
+    }
+
+    /**
+     * Terminal "report not ready" page. Shown only when ?report=1 has no cached
+     * report AND cannot rebuild one (e.g. the job was cleared). It NEVER polls,
+     * auto-redirects, or re-enters the building state — so it cannot loop.
+     */
+    public static function reportMissing($resumable = false): string
+    {
+        $debug_badge = Debug::badge();
+        $resume = $resumable
+            ? '<a class="btn" href="?building=1">Resume analysis</a> '
+            : '';
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Report not ready</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#f0f0f1; color:#1d2327;
+         font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif; }
+  .card { background:#fff; border:1px solid #c3c4c7; border-radius:8px; padding:28px 30px; max-width:460px; }
+  h1 { font-size:19px; font-weight:600; margin:0 0 8px; }
+  p { color:#50575e; margin:0 0 16px; }
+  .btn { display:inline-block; background:#2271b1; color:#fff; border:1px solid #2271b1;
+         border-radius:4px; padding:8px 16px; font-weight:500; text-decoration:none; }
+  .btn:hover { background:#135e96; }
+  .btn.secondary { background:#f6f7f7; color:#2271b1; }
+</style>
+</head>
+<body>
+{$debug_badge}
+<div class="card">
+  <h1>No finished report to show yet</h1>
+  <p>This browser has no completed analysis cached. Nothing is loading — start a new
+     analysis (or resume the one in progress).</p>
+  {$resume}<a class="btn secondary" href="?">Start new analysis</a>
+</div>
+</body>
+</html>
+HTML;
+    }
+
+    /** The input form (plain POST → progressive report shell). */
     public static function form($cfg, $error = '', $prefill = []): string
     {
         $target = Support::h($prefill['target_url'] ?? $cfg['TARGET_URL']);
@@ -563,11 +676,11 @@ HTML;
         $err = $error ? '<div class="err">' . Support::h($error) . '</div>' : '';
         $curl_ok = function_exists('curl_multi_init')
             ? '' : '<div class="err">⚠️ The cURL extension is not enabled on this host — live fetching will not work. Ask your host to enable php-curl.</div>';
+        $ossl_ok = function_exists('openssl_encrypt')
+            ? '' : '<div class="err">⚠️ OpenSSL is not enabled — the progressive, refresh-safe analysis is unavailable and the tool falls back to a single request. Ask your host to enable php-openssl.</div>';
         $topnav = self::topNav('scorer');
-        // The streaming terminal needs the encrypted cache (OpenSSL). When it is
-        // unavailable the form falls back to a normal POST.
-        $stream_ok = function_exists('openssl_encrypt') ? 'true' : 'false';
         $debug_badge = Debug::badge();
+        $per_url_checked = !empty($prefill['per_url']) ? ' checked' : '';   // default OFF
 
         return <<<HTML
 <!DOCTYPE html>
@@ -612,73 +725,16 @@ HTML;
   .topnav a.active { background:#fff; border-color:var(--line); color:var(--text); margin-bottom:-1px; }
   .topnav a.logout { margin-left:auto; color:#b32d2e; }
   [hidden] { display:none !important; }
-  .term { position:fixed; inset:0; z-index:9999; background:rgba(8,10,14,.86);
-          display:flex; align-items:center; justify-content:center; padding:18px; }
-  .term-win { width:min(860px,100%); height:min(72vh,640px); display:flex; flex-direction:column;
-              background:#0b0f17; border:1px solid #1d2734; border-radius:10px; overflow:hidden;
-              box-shadow:0 24px 70px rgba(0,0,0,.5); }
-  .term-bar { display:flex; align-items:center; gap:8px; padding:9px 14px; background:#121826;
-              border-bottom:1px solid #1d2734; }
-  .term-bar .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
-  .term-bar .dot.r { background:#ff5f56; } .term-bar .dot.y { background:#ffbd2e; } .term-bar .dot.g { background:#27c93f; }
-  .term-title { color:#9fb3c8; font:600 12px ui-monospace,Consolas,monospace; margin-left:6px; }
-  .term-elapsed { margin-left:auto; color:#5eead4; font:600 12px ui-monospace,Consolas,monospace;
-                  font-variant-numeric:tabular-nums; }
-  .term-body { margin:0; flex:1; overflow-y:auto; padding:14px 16px; background:#0b0f17;
-               color:#c7d2da; font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
-               white-space:pre-wrap; word-break:break-word; }
-  .term-body .l-cmd  { color:#7dd3fc; font-weight:700; }
-  .term-body .l-ok   { color:#86efac; }
-  .term-body .l-warn { color:#fcd34d; }
-  .term-body .l-err  { color:#fca5a5; }
-  .term-body .l-info { color:#93c5fd; }
-  .term-body .l-done { color:#34d399; font-weight:700; }
-  .term-body .l-clean { color:#86efac; }
-  .term-body .l-susp  { color:#fcd34d; }
-  .term-body .l-spam  { color:#fca5a5; font-weight:700; }
-  .term-body .cur { display:inline-block; width:8px; height:15px; background:#34d399;
-                    vertical-align:-2px; animation:blink 1s steps(1) infinite; }
-  @keyframes blink { 50% { opacity:0; } }
-  .term-foot { display:flex; align-items:center; gap:12px; padding:9px 14px; background:#121826;
-               border-top:1px solid #1d2734; color:#9fb3c8; font:12px ui-monospace,Consolas,monospace;
-               flex-wrap:wrap; }
-  .term-foot .muted { color:#6b7c92; }
-  .term-actions { margin-left:auto; display:inline-flex; gap:8px; }
-  .term-btn, .term-close { background:#1f2a3a; color:#cbd5e1; border:1px solid #2c3a4e;
-                border-radius:5px; padding:5px 12px; font:inherit; cursor:pointer; }
-  .term-btn:hover, .term-close:hover { background:#27374b; }
-  .term-btn.primary { background:#134e4a; border-color:#155e57; color:#a7f3d0; }
-  .term-btn.primary:hover { background:#166057; }
 </style>
 </head>
 <body>
-<div id="term" class="term" hidden>
-  <div class="term-win">
-    <div class="term-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="term-title">spam-check — live</span>
-      <span class="term-elapsed" id="termTime">0.0s</span>
-    </div>
-    <pre class="term-body" id="termBody"><span class="cur"></span></pre>
-    <div class="term-foot">
-      <span class="term-spin" id="termSpin">▰▱▱</span>
-      <span id="termCounts">🟢 0 · 🟡 0 · 🔴 0</span>
-      <span id="termStat" class="muted">starting…</span>
-      <span class="term-actions" id="termActions" hidden>
-        <button type="button" class="term-btn" id="btnDisavow">⬇ disavow.txt</button>
-        <button type="button" class="term-btn primary" id="btnReport">Open full report ↗</button>
-      </span>
-      <button type="button" class="term-close" id="termClose" hidden>Close</button>
-    </div>
-  </div>
-</div>
 {$debug_badge}
 <div class="wrap">
   {$topnav}
   <h1>Backlink Prospect Scorer</h1>
   <p class="lead">Paste candidate domains and find the best ones to get a backlink from — ranked, with all factors checked.</p>
-  {$err}{$curl_ok}
-  <form method="post" enctype="multipart/form-data" data-scan="1">
+  {$err}{$curl_ok}{$ossl_ok}
+  <form method="post" enctype="multipart/form-data">
     {$pw_field}
     <label>Your website (defines relevance)</label>
     <input type="url" name="target_url" value="{$target}" placeholder="https://your-site.com" required>
@@ -699,172 +755,318 @@ HTML;
 
     <div class="check"><input type="checkbox" name="live" value="1" checked> Fetch each site live (recommended)</div>
     <div class="check"><input type="checkbox" name="verify_ssl" value="1" checked> Verify SSL (uncheck if your host has CA errors)</div>
+    <div class="check"><input type="checkbox" name="per_url" value="1"{$per_url_checked}> Don't merge domains (analyze every URL)</div>
+    <p class="muted small" style="margin:4px 0 0">Off (recommended for Disavow): one row per <strong>domain</strong>. On: one row per <strong>URL</strong> — more rows, useful to see which exact pages link to you. <strong>Disavow is always domain-level</strong>, even when this is on.</p>
 
     <button type="submit">Analyze &amp; rank</button>
-    <p class="muted" style="margin-top:1rem">Tip: for large lists (hundreds of domains), raise <strong>Workers</strong> so more sites are fetched within the time limit, and raise PHP <code>max_execution_time</code> if you can. Either way, the <strong>For Removal / Disavow</strong> audit classifies <em>every</em> domain you paste, not just the ones fetched in time.</p>
+    <p class="muted" style="margin-top:1rem">Tip: for large lists (hundreds of domains), raise <strong>Workers</strong> so more sites are fetched per batch. The analysis runs progressively in small batches, so it finishes the whole list regardless of the host's time limit — and the <strong>For Removal / Disavow</strong> audit classifies <em>every</em> domain you paste.</p>
   </form>
 </div>
-<script>
-// Live spam-check console. Submits the list once (?prepare=1), then checks it in
-// small BATCHES (?batch=1) — each a short request, so even a time-limited shared
-// host (e.g. Hostinger) finishes the WHOLE list instead of dying after ~100.
-// Verdicts render line-by-line for a live feel. (A Server-Sent-Events endpoint
-// ?sse=1 also exists for hosts that allow long streaming, but batching is the
-// reliable default.) Falls back to a normal POST when JS/OpenSSL is unavailable.
-var STREAM_OK = {$stream_ok};
-var BATCH = 12;
-var TERM = {};
-function el(id){ return document.getElementById(id); }
-
-(function(){
-  var form = document.querySelector('form[data-scan]');
-  if(!form) return;
-  form.addEventListener('submit', function(ev){
-    if(!STREAM_OK || !window.fetch){ return; } // no streaming support -> normal POST
-    ev.preventDefault();
-    startCheck(form);
-  });
-})();
-
-function startCheck(form){
-  TERM = { t0:Date.now(), checked:0, total:0, counts:{clean:0,suspicious:0,spam:0},
-           spam:[], queue:[], draining:false, lastBatch:false, finished:false,
-           reportUrl:'?report=1', timer:null };
-  el('term').hidden = false;                 // ALWAYS show the console immediately
-  el('termActions').hidden = true; el('termClose').hidden = true;
-  el('termBody').innerHTML = '<span class="cur"></span>';
-  setCounts(); setStat('preparing…');
-  var frames = ['▰▱▱','▰▰▱','▰▰▰','▰▰▱'], fi = 0;
-  TERM.timer = setInterval(function(){
-    el('termTime').textContent = ((Date.now()-TERM.t0)/1000).toFixed(1)+'s';
-    if(!TERM.finished){ el('termSpin').textContent = frames[fi=(fi+1)%frames.length]; }
-  }, 200);
-
-  line('$ spam-check  (preparing…)', 'l-cmd');
-  fetch('?prepare=1', {method:'POST', body:new FormData(form), credentials:'same-origin'})
-    .then(function(r){ return r.text(); })
-    .then(function(t){
-      var d; try { d = JSON.parse(t); }
-      catch(e){ fail('prepare did not return JSON (host/deploy issue) — open  ?health=1'); return; }
-      if(!d || !d.ok){ fail(d && d.error ? d.error : 'prepare failed'); return; }
-      TERM.total = d.total;
-      if(!TERM.total){ fail('no valid domains found in the input'); return; }
-      line('· '+TERM.total+' unique domain(s) queued', 'l-info');
-      // Batch polling: each request is short, so a time-limited host still
-      // finishes the WHOLE list. This is the reliable default.
-      line('$ checking in batches of '+BATCH+' …', 'l-cmd');
-      setStat('0 / '+TERM.total);
-      poll(0);
-    })
-    .catch(function(e){ fail('prepare failed: '+(e&&e.message?e.message:e)+'  — open  ?health=1'); });
-}
-
-function poll(offset, attempt){
-  attempt = attempt || 0;
-  var fd = new FormData(); fd.append('offset', offset); fd.append('size', BATCH);
-  fetch('?batch=1', {method:'POST', body:fd, credentials:'same-origin'})
-    .then(function(r){ return r.text(); })
-    .then(function(t){
-      var d; try { d = JSON.parse(t); }
-      catch(e){ return retryBatch(offset, attempt, 'batch did not return JSON (tick likely killed)'); }
-      if(!d || !d.ok){ return retryBatch(offset, attempt, d && d.error ? d.error : 'batch failed'); }
-      setStat(Math.min(d.next, d.total)+' / '+d.total);
-      enqueue(d.results || []);
-      if(d.done){ TERM.lastBatch = true; TERM.reportUrl = d.report || '?report=1'; drain(); }
-      else { poll(d.next, 0); }
-    })
-    .catch(function(e){ retryBatch(offset, attempt, 'network: '+(e&&e.message?e.message:e)); });
-}
-// A failed/killed tick is RESUMABLE: retry the SAME offset (the server's batch is
-// idempotent — it just re-checks that slice). So one dead tick never ends the run.
-function retryBatch(offset, attempt, why){
-  if(TERM.finished) return;
-  if(attempt < 4){
-    var wait = 700 * (attempt + 1);
-    line('· batch @'+offset+' failed ('+why+') — resuming in '+(wait/1000).toFixed(1)+'s ['+(attempt+1)+'/4]', 'l-warn');
-    setTimeout(function(){ poll(offset, attempt + 1); }, wait);
-  } else {
-    fail('batch @'+offset+' failed after 4 retries: '+why+'  — open ?debug=1 / ?health=1');
-  }
-}
-
-// Render queued verdicts smoothly (~12ms each) for a live line-by-line feel,
-// independent of the network polling above.
-function enqueue(list){ for(var i=0;i<list.length;i++){ TERM.queue.push(list[i]); } drain(); }
-function drain(){
-  if(TERM.draining) return;
-  TERM.draining = true;
-  (function step(){
-    if(TERM.queue.length === 0){
-      TERM.draining = false;
-      if(TERM.lastBatch && !TERM.finished){
-        onSummary({total:TERM.total, clean:TERM.counts.clean, suspicious:TERM.counts.suspicious, spam:TERM.counts.spam});
-        onDone({report:TERM.reportUrl});
-      }
-      return;
+</body>
+</html>
+HTML;
     }
-    onItem(TERM.queue.shift());
-    setTimeout(step, 12);
-  })();
-}
 
-function pad(s, n){ s = String(s); while(s.length < n){ s += ' '; } return s; }
-function line(text, cls){
-  var cur = el('termBody').querySelector('.cur');
-  var span = document.createElement('span');
-  if(cls){ span.className = cls; }
-  span.textContent = text + '\n';
-  el('termBody').insertBefore(span, cur);
-  el('termBody').scrollTop = el('termBody').scrollHeight;
-}
-function onItem(v){
-  TERM.checked++;
-  var tier = v.tier || 'clean';
-  TERM.counts[tier] = (TERM.counts[tier]||0) + 1;
-  if(tier === 'spam'){ TERM.spam.push(v); }
-  var tag  = tier==='spam' ? '[SPAM]' : (tier==='suspicious' ? '[SUSP]' : '[ OK ]');
-  var http = v.http ? (' '+v.http) : '';
-  var extra = tier==='clean' ? (v.score!=null ? ('   score '+v.score) : '') : ('   '+((v.signals||[]).join('; ')));
-  line(tag+'  '+pad(v.domain, 32)+http+extra, tier==='spam'?'l-spam':(tier==='suspicious'?'l-susp':'l-clean'));
-  setCounts();
-}
-function onSummary(s){
-  line('', '');
-  line('── summary ──  '+(s.total||TERM.checked)+' checked · '+(s.clean||0)+' clean · '+(s.suspicious||0)+' suspicious · '+(s.spam||0)+' spam', 'l-done');
-}
-function onDone(d){
-  TERM.finished = true;
-  if(d && d.report){ TERM.reportUrl = d.report; }
-  clearInterval(TERM.timer);
-  el('termSpin').textContent = '✓'; setStat('done');
-  el('termActions').hidden = false; el('termClose').hidden = false;
-  el('btnDisavow').disabled = TERM.spam.length === 0;
-  el('btnDisavow').onclick = downloadDisavow;
-  el('btnReport').onclick = function(){ window.location.href = TERM.reportUrl || '?report=1'; };
-  el('termClose').onclick = function(){ el('term').hidden = true; };
-}
-function fail(msg){
-  TERM.finished = true; clearInterval(TERM.timer);
-  el('termSpin').textContent = '✗'; setStat('failed');
-  line('[error] '+msg, 'l-err');
-  el('termClose').hidden = false; el('termClose').onclick = function(){ el('term').hidden = true; };
-}
-function setStat(s){ el('termStat').textContent = s; }
-function setCounts(){ el('termCounts').textContent = '🟢 '+(TERM.counts.clean||0)+' · 🟡 '+(TERM.counts.suspicious||0)+' · 🔴 '+(TERM.counts.spam||0); }
-function downloadDisavow(){
-  var d = new Date();
-  var ds = d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
-  var out = ['# Disavow generated '+ds, '# Source: Backlink spam-check (hard-spam only)', '#'];
-  TERM.spam.forEach(function(v){ out.push('# '+(((v.signals||[]).join('; '))||'spam')); out.push('domain:'+v.domain); });
-  if(TERM.spam.length === 0){ out.push('# No spam domains detected.'); }
-  var blob = new Blob([out.join('\n')+'\n'], {type:'text/plain;charset=utf-8'});
-  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'disavow.txt';
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
-}
+    /**
+     * The progressive report shell (?building=1). Renders instantly, then drives
+     * ?job=batch over AJAX: it appends each checked row to a live table and shows
+     * a "Checked X of N" counter, and when every batch is done it does ONE final
+     * navigation to the complete, filtered report (?report=1).
+     *
+     * Why this design eliminates the hang:
+     *   - No request it issues runs the whole list — each ?job=batch is a short,
+     *     bounded slice, so a host time limit can never kill "the analysis".
+     *   - Every fetch has a hard client-side timeout (AbortController), so a
+     *     stalled batch becomes a retryable error instead of an eternal spinner.
+     *   - After repeated failures it stops at a CLEAR terminal error state with a
+     *     Retry button — never an infinite spin.
+     *   - The offset lives on the server, so retries/reloads RESUME, never restart.
+     */
+    public static function reportShell($v): string
+    {
+        $total     = (int)($v['total'] ?? 0);
+        $processed = (int)($v['processed'] ?? 0);
+        $id        = Support::h($v['id'] ?? '');
+        $debug_badge = Debug::badge();
+        $count_line = self::countLine($v['submitted'] ?? 0, $v['unique'] ?? $total, $v['merged'] ?? 0, !empty($v['per_url']));
+        $count_html = $count_line !== '' ? '<p class="muted small" id="countline">' . Support::h($count_line) . '</p>' : '';
+
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Checking backlinks…</title>
+<style>
+  :root{ --blue:#2271b1; --blued:#135e96; --line:#c3c4c7; --bg:#f0f0f1;
+         --text:#1d2327; --muted:#50575e; --stripe:#f6f7f7;
+         --good:#008a20; --warn:#bd5b00; --bad:#b32d2e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen-Sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:24px 20px 60px; }
+  h1 { font-size:23px; font-weight:400; margin:0 0 6px; }
+  a { color:var(--blue); text-decoration:none; } a:hover { text-decoration:underline; }
+  .muted { color:var(--muted); } .small { font-size:12px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:6px; padding:18px 20px; margin:14px 0; }
+  .count { font-size:20px; font-weight:600; }
+  .count .n { color:var(--blue); font-variant-numeric:tabular-nums; }
+  .bartrack { height:10px; background:#e6e8eb; border-radius:6px; overflow:hidden; margin:12px 0 4px; }
+  .barfill { height:100%; width:0%; background:linear-gradient(90deg,#2271b1,#135e96); transition:width .25s ease; }
+  .statline { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+  .pill { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:12px; }
+  .pill.clean { background:#edfaef; color:var(--good); border:1px solid #b8e6c1; }
+  .pill.susp  { background:#fff8e5; color:var(--warn); border:1px solid #f0d98c; }
+  .pill.spam  { background:#fcf0f1; color:var(--bad); border:1px solid #f0c2c3; }
+  .spin { display:inline-block; width:15px; height:15px; border:2px solid #cfd6dd;
+          border-top-color:var(--blue); border-radius:50%; animation:rot .8s linear infinite; vertical-align:-3px; }
+  @keyframes rot { to { transform:rotate(360deg); } }
+  table { width:100%; border-collapse:collapse; background:#fff;
+          border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-top:12px; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid #f0f0f1; vertical-align:top; }
+  th { font-weight:600; border-bottom:1px solid var(--line); }
+  tbody tr:nth-child(odd) { background:var(--stripe); }
+  td.rank { color:var(--muted); width:46px; }
+  td.dom { font-weight:600; word-break:break-all; }
+  .tier { font-weight:700; font-size:11px; padding:1px 7px; border-radius:3px; }
+  .tier.clean { color:var(--good); } .tier.susp { color:var(--warn); } .tier.spam { color:var(--bad); }
+  .err { background:#fcf0f1; border-left:4px solid #d63638; color:#1d2327;
+         padding:12px 14px; border-radius:4px; margin:14px 0; }
+  .btn { display:inline-block; background:var(--blue); color:#fff; border:1px solid var(--blue);
+         border-radius:3px; padding:7px 16px; font-size:13px; font-weight:500; cursor:pointer; }
+  .btn:hover { background:var(--blued); border-color:var(--blued); }
+  .btn.secondary { background:#f6f7f7; color:var(--blue); margin-left:6px; text-decoration:none; }
+  noscript .err { display:block; }
+</style>
+</head>
+<body>
+{$debug_badge}
+<div class="wrap">
+  <p><a href="?" class="small">&larr; New analysis</a></p>
+  <h1>Checking your backlinks…</h1>
+  {$count_html}
+
+  <noscript>
+    <div class="err">JavaScript is off. <a href="?job=step">Continue without JavaScript →</a>
+      (the page will advance one batch at a time until it finishes).</div>
+  </noscript>
+
+  <div class="panel" id="statusPanel"
+       data-job-id="{$id}" data-total="{$total}" data-processed="{$processed}" data-endpoint="?job=batch">
+    <div class="statline">
+      <span class="spin" id="spin"></span>
+      <span class="count">Checked <span class="n" id="done">{$processed}</span> of <span class="n" id="total">{$total}</span></span>
+      <span class="pill clean" id="pillClean">0 clean</span>
+      <span class="pill susp"  id="pillSusp">0 review</span>
+      <span class="pill spam"  id="pillSpam">0 spam</span>
+    </div>
+    <div class="bartrack"><div class="barfill" id="bar"></div></div>
+    <div class="small muted" id="stat">starting…</div>
+  </div>
+
+  <table id="live">
+    <thead><tr><th>#</th><th>Domain</th><th>HTTP</th><th>Score</th><th>Verdict</th><th>Signals</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<!-- The loader logic lives in an EXTERNAL file (?asset=shell.js) so a host /
+     account-level Content-Security-Policy that blocks inline <script> cannot stop
+     the batch loop. Per-page values are passed via data-* on #statusPanel above
+     (HTML attributes are not affected by script-src CSP). -->
+<script src="?asset=shell.js"></script>
+<script>
+/* Fail-safe: shell.js sets window.__blsBooted when its loop starts (and fires the
+   first ?job=batch). If that hasn't happened within 3s, the external loader was
+   empty / invalid / blocked — show a VISIBLE "loader didn't start — reload"
+   message instead of hanging forever on "starting…". */
+(function(){
+  setTimeout(function(){
+    if(window.__blsBooted){ return; }
+    var sp=document.getElementById('spin'); if(sp){ sp.style.display='none'; }
+    var s=document.getElementById('stat');
+    if(s){ s.innerHTML='⚠ Loader didn’t start — <a href="?building=1">reload</a>. '
+      + '<span class="muted">(<a href="?asset=shell.js" target="_blank" rel="noopener">open shell.js</a> · '
+      + '<a href="?debug=1">debug log</a> · <a href="?job=step">continue without JavaScript</a>)</span>'; }
+    if(window.console&&console.error){ console.error('[bls] watchdog: loader did not start within 3s'); }
+  }, 3000);
+})();
 </script>
 </body>
 </html>
 HTML;
+    }
+
+    /**
+     * The report-shell loader JavaScript, served as an EXTERNAL file via the
+     * ?asset=shell.js route. It is pure static JS (no PHP interpolation): all
+     * per-page values come from data-* attributes on #statusPanel, so a host
+     * CSP that forbids inline scripts cannot block this logic. Wrapped in an
+     * IIFE to avoid leaking globals.
+     */
+    public static function shellJs(): string
+    {
+        return <<<'JS'
+(function(){
+  'use strict';
+  // Surface ANY uncaught error VISIBLY — a silent throw must never leave the page
+  // spinning forever. Installed first so it also catches errors during init below.
+  window.addEventListener('error', function(ev){
+    try {
+      var s = document.getElementById('stat');
+      if(s){ s.textContent = 'startup error: ' + (ev && ev.message ? ev.message : 'unknown') + ' — open ?debug=1 / ?health=1'; }
+      var sp = document.getElementById('spin'); if(sp){ sp.style.display = 'none'; }
+    } catch(e){}
+  });
+
+  // Per-page config comes from data-* attributes (CSP-safe), NOT inline JS.
+  var ROOT = document.getElementById('statusPanel');
+  var cfg = (ROOT && ROOT.dataset) ? ROOT.dataset : {};
+  var JOB_ID = cfg.jobId || '';
+  var ENDPOINT = cfg.endpoint || '?job=batch';
+  var SIZE = 20;            // domains per batch (server caps at 40)
+  var REQ_TIMEOUT = 25000;  // hard per-request cap (ms) — a stalled tick aborts & retries
+  var MAX_FAILS = 5;        // consecutive failures before a terminal error state
+  var STATE = { done: parseInt(cfg.processed, 10) || 0, total: parseInt(cfg.total, 10) || 0,
+                rank:0, counts:{clean:0,suspicious:0,spam:0}, finished:false, fails:0 };
+  function el(id){ return document.getElementById(id); }
+
+  function setProgress(done, total){
+    STATE.done = done; STATE.total = total;
+    el('done').textContent = done; el('total').textContent = total;
+    var pct = total > 0 ? Math.round(done/total*100) : 0;
+    el('bar').style.width = pct + '%';
+    el('stat').textContent = 'checked ' + done + ' of ' + total + ' (' + pct + '%)';
+  }
+  function setCounts(){
+    el('pillClean').textContent = STATE.counts.clean + ' clean';
+    el('pillSusp').textContent  = STATE.counts.suspicious + ' review';
+    el('pillSpam').textContent  = STATE.counts.spam + ' spam';
+  }
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function appendRows(rows){
+    if(!rows || !rows.length) return;
+    var tb = el('rows'), frag = document.createDocumentFragment();
+    for(var i=0;i<rows.length;i++){
+      var v = rows[i], tier = v.tier || 'clean';
+      STATE.counts[tier] = (STATE.counts[tier]||0) + 1;
+      STATE.rank++;
+      var label = tier==='spam' ? 'SPAM' : (tier==='suspicious' ? 'REVIEW' : 'CLEAN');
+      var cls   = tier==='spam' ? 'spam' : (tier==='suspicious' ? 'susp' : 'clean');
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td class="rank">'+STATE.rank+'</td>'
+        + '<td class="dom">'+esc(v.domain)+'</td>'
+        + '<td>'+(v.http?esc(v.http):'—')+'</td>'
+        + '<td>'+(v.score!=null?esc(v.score):'—')+'</td>'
+        + '<td><span class="tier '+cls+'">'+label+'</span></td>'
+        + '<td class="small muted">'+esc((v.signals||[]).join('; '))+'</td>';
+      frag.appendChild(tr);
+    }
+    tb.appendChild(frag);
+    setCounts();
+  }
+
+  function batchOnce(){
+    var ctrl = (window.AbortController) ? new AbortController() : null;
+    var to = ctrl ? setTimeout(function(){ ctrl.abort(); }, REQ_TIMEOUT) : null;
+    var fd = new FormData(); fd.append('size', SIZE); fd.append('id', JOB_ID);
+    var opt = { method:'POST', body:fd, credentials:'same-origin' };
+    if(ctrl){ opt.signal = ctrl.signal; }
+    return fetch(ENDPOINT, opt).then(function(r){ if(to) clearTimeout(to); return r.text(); },
+      function(e){ if(to) clearTimeout(to); throw e; });
+  }
+
+  function tick(){
+    if(STATE.finished) return;
+    batchOnce().then(function(t){
+      var d; try { d = JSON.parse(t); }
+      catch(e){ return softFail('batch did not return JSON (tick likely killed by the host)'); }
+      if(!d || !d.ok){ return softFail(d && d.error ? d.error : 'batch failed'); }
+      STATE.fails = 0;
+      appendRows(d.rows || []);
+      setProgress(d.processed, d.total);
+      if(d.done){ finish(d.report || '?report=1'); }
+      else { setTimeout(tick, 0); }   // next slice immediately
+    }).catch(function(e){
+      var why = (e && e.name === 'AbortError') ? 'batch timed out (no response in '+(REQ_TIMEOUT/1000)+'s)'
+                                               : ('network error: ' + (e && e.message ? e.message : e));
+      softFail(why);
+    });
+  }
+
+  // A failed/aborted tick is RESUMABLE: the server's offset hasn't advanced, so a
+  // retry re-runs the SAME slice. Back off, then continue. One dead tick never ends
+  // the run; only MAX_FAILS in a row produces a terminal error.
+  function softFail(why){
+    if(STATE.finished) return;
+    STATE.fails++;
+    if(STATE.fails <= MAX_FAILS){
+      var wait = Math.min(8000, 600 * STATE.fails);
+      el('stat').textContent = 'batch failed (' + why + ') — resuming in ' + (wait/1000).toFixed(1) + 's [' + STATE.fails + '/' + MAX_FAILS + ']';
+      setTimeout(tick, wait);
+    } else {
+      hardFail(why);
+    }
+  }
+
+  function finish(url){
+    STATE.finished = true;
+    el('spin').style.display = 'none';
+    el('stat').textContent = 'done — opening the full report…';
+    // ONE final render on the COMPLETE set: the assembled, filtered report.
+    window.location.replace(url || '?report=1');
+  }
+
+  function hardFail(why){
+    STATE.finished = true;
+    el('spin').style.display = 'none';
+    el('stat').textContent = 'stopped';
+    var div = document.createElement('div');
+    div.className = 'err';
+    div.innerHTML = 'Analysis stopped after ' + MAX_FAILS + ' failed batches: ' + esc(why)
+      + '<br><br><button class="btn" id="retryBtn">Retry from where it stopped</button>'
+      + ' <a class="btn secondary" href="?debug=1">Open debug log</a>'
+      + ' <a class="btn secondary" href="?health=1">Host health</a>';
+    el('statusPanel').appendChild(div);
+    document.getElementById('retryBtn').onclick = function(){
+      div.parentNode.removeChild(div); STATE.finished = false; STATE.fails = 0; el('spin').style.display = '';
+      tick();   // resumes at the server's current offset
+    };
+  }
+
+  // Start the batch loop. Idempotent (guards against double-boot), wrapped so any
+  // failure is shown instead of dying silently, and triggered MULTIPLE ways so it
+  // runs no matter when this script executes relative to the DOM.
+  function boot(){
+    if(window.__blsBooted){ return; }
+    window.__blsBooted = true;
+    try {
+      if(!window.fetch){
+        el('spin').style.display = 'none';
+        el('stat').innerHTML = 'This browser cannot run the live loader. ' +
+          '<a href="?job=step">Continue without JavaScript &rarr;</a>';
+        return;
+      }
+      if(window.console && console.log){ console.log('[bls] batch loop START — job=' + JOB_ID + ' total=' + STATE.total); }
+      el('stat').textContent = 'starting batches…';
+      setProgress(STATE.done, STATE.total);
+      tick();   // first ?job=batch POST goes out now
+    } catch(e){
+      hardFail('kickoff error: ' + (e && e.message ? e.message : e));
+    }
+  }
+  // Run now if the DOM is already parsed; otherwise as soon as it is. The extra
+  // load + timer triggers are belt-and-suspenders so the loop ALWAYS starts.
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+  window.addEventListener('load', boot);
+  setTimeout(boot, 1000);
+})();
+JS;
     }
 
     /**

@@ -196,4 +196,51 @@ class Security
         }
         return self::decrypt($blob);
     }
+
+    // ------------------------------------------------- batch job state
+    //
+    // A progressive analysis is split into two encrypted per-browser blobs:
+    //   'job'  — the immutable work order (parsed records + niche + pbn + opts),
+    //            written once on submit.
+    //   'prog' — the cursor: {offset, done}. 'offset' is the next record to
+    //            process (server-authoritative, so a batch is idempotent and a
+    //            reload resumes instead of restarting); 'done' accumulates the
+    //            slim processed records for the final report assembly.
+    // Both are AES-encrypted via cachePut/cacheGet exactly like the report cache.
+
+    /** Persist the immutable analysis job for this browser. */
+    public static function jobSave(string $uid, array $job): bool
+    {
+        return self::cachePut($uid, 'job', json_encode($job, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    /** Load the analysis job, or null if none / unreadable. */
+    public static function jobLoad(string $uid): ?array
+    {
+        $raw = self::cacheGet($uid, 'job');
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        $d = json_decode($raw, true);
+        return is_array($d) ? $d : null;
+    }
+
+    /** Persist the progress cursor (offset + accumulated slim records). */
+    public static function progSave(string $uid, array $prog): bool
+    {
+        return self::cachePut($uid, 'prog', json_encode($prog, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    /** Load the progress cursor, defaulting to a fresh zero state. */
+    public static function progLoad(string $uid): array
+    {
+        $raw = self::cacheGet($uid, 'prog');
+        if (is_string($raw) && $raw !== '') {
+            $d = json_decode($raw, true);
+            if (is_array($d)) {
+                return ['offset' => (int)($d['offset'] ?? 0), 'done' => (array)($d['done'] ?? [])];
+            }
+        }
+        return ['offset' => 0, 'done' => []];
+    }
 }

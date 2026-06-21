@@ -61,8 +61,18 @@ class Support
         return [$host, ''];
     }
 
-    /** Normalise a raw entry into a clean http(s) URL, or null if invalid. */
-    public static function normalizeUrl($raw)
+    /**
+     * Normalise a raw entry into a clean http(s) URL, or null if invalid.
+     *
+     * Default ($keepPathQuery = false): scheme://host/path — query and fragment
+     * are dropped. This is what domain-level analysis uses.
+     *
+     * Per-URL mode ($keepPathQuery = true): keeps the path AND query string but
+     * drops the #fragment, lowercases the host, and strips a trailing slash on
+     * non-root paths — so only trivial noise is normalised and "/a?x=1" stays
+     * distinct from "/b". Used when the user opts to analyse every URL.
+     */
+    public static function normalizeUrl($raw, $keepPathQuery = false)
     {
         $s = trim((string)$raw, " \t\n\r\0\x0B\"'");
         if ($s === '') {
@@ -87,7 +97,14 @@ class Support
         if ($path === '') {
             $path = '/';
         }
-        return "$scheme://$host$path";
+        if (!$keepPathQuery) {
+            return "$scheme://$host$path";
+        }
+        if (strlen($path) > 1) {
+            $path = rtrim($path, '/');   // "/page/" and "/page" are the same URL
+        }
+        $query = (isset($p['query']) && $p['query'] !== '') ? '?' . $p['query'] : '';
+        return "$scheme://$host$path$query";
     }
 
     /** Absolute path to the web-blocked data directory (under the project root). */

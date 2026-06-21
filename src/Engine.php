@@ -28,8 +28,13 @@ class Engine
 
     // ----------------------------------------------------- input parsing
 
-    /** Parse pasted text into backlink records (supports "url,dr,spam" lines). */
-    public static function loadLines($text, $cfg): array
+    /**
+     * Parse pasted text into backlink records (supports "url,dr,spam" lines).
+     * When $keepPathQuery is true (per-URL mode) the source_url keeps its path +
+     * query so different pages on one domain stay distinct; otherwise the URL is
+     * reduced to scheme://host/path (domain-level analysis).
+     */
+    public static function loadLines($text, $cfg, $keepPathQuery = false): array
     {
         $rows = [];
         foreach (preg_split('/\r\n|\r|\n/', (string)$text) as $line) {
@@ -46,7 +51,7 @@ class Engine
                 $fields = str_getcsv($line);
                 $url = trim($fields[0]);
                 $bl = self::newBacklink($url);
-                $norm = Support::normalizeUrl($url);
+                $norm = Support::normalizeUrl($url, $keepPathQuery);
                 if ($norm) {
                     $bl['source_url'] = $norm;
                     [$bl['registrable_domain'], $bl['tld']] =
@@ -64,7 +69,7 @@ class Engine
 
             foreach (Support::splitConcatenated($line) as $piece) {
                 $bl = self::newBacklink($piece);
-                $norm = Support::normalizeUrl($piece);
+                $norm = Support::normalizeUrl($piece, $keepPathQuery);
                 if ($norm) {
                     $bl['source_url'] = $norm;
                     [$bl['registrable_domain'], $bl['tld']] =
@@ -166,7 +171,13 @@ class Engine
                 $add();
             }
             if ($running) {
-                curl_multi_select($mh, 1.0);
+                // Some libcurl builds return -1 immediately when there is nothing
+                // to wait on; sleep a beat so we never busy-spin the CPU (which on
+                // CloudLinux shared hosting trips the per-account CPU/IO throttle
+                // and slows EVERY request on the subdomain to a crawl).
+                if (curl_multi_select($mh, 1.0) === -1) {
+                    usleep(50000);
+                }
             }
             if (time() > $deadline) {
                 $fm_hit = true;
@@ -803,14 +814,72 @@ class Engine
 
     // ------------------------------------------- streaming / batch helpers
 
+    /** Drop duplicate URLs (per-URL mode), keeping the first occurrence. */
+    public static function dedupeUrls($backlinks): array
+    {
+        $seen = [];
+        $out = [];
+        foreach ($backlinks as $bl) {
+            $key = $bl['source_url'] !== '' ? $bl['source_url'] : $bl['raw'];
+            if ($key !== '') {
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = 1;
+            }
+            $out[] = $bl;
+        }
+        return $out;
+    }
+
+    /**
+     * Parse the pasted input into records AND report how the list collapsed, so
+     * the UI can be transparent about it (e.g. "462 URLs → 108 unique domains").
+     *
+     * Default: one record per registrable domain (best for Disavow). When
+     * $opts['per_url'] is set: one record per unique URL (path + query kept).
+     * Every record carries 'url_count' = how many input URLs mapped to its
+     * registrable domain (powers the per-domain badge). Returns:
+     *   ['records'=>[...], 'submitted'=>int, 'unique'=>int, 'merged'=>int]
+     */
+    public static function parseRecordsWithStats($text, $opts, $cfg): array
+    {
+        $per_url = !empty($opts['per_url']);
+        $parsed = self::loadLines($text, $cfg, $per_url);
+        if (!empty($opts['limit']) && (int)$opts['limit'] > 0) {
+            $parsed = array_slice($parsed, 0, (int)$opts['limit']);
+        }
+        $submitted = count($parsed);
+
+        // How many input URLs map to each registrable domain (badge source).
+        $domainUrlCounts = [];
+        foreach ($parsed as $bl) {
+            $d = $bl['registrable_domain'];
+            if ($d !== '') {
+                $domainUrlCounts[$d] = ($domainUrlCounts[$d] ?? 0) + 1;
+            }
+        }
+
+        $records = $per_url ? self::dedupeUrls($parsed) : self::dedupeDomains($parsed);
+        $records = array_values($records);
+        foreach ($records as $i => $rec) {
+            $d = $rec['registrable_domain'];
+            $records[$i]['url_count'] = ($d !== '' && isset($domainUrlCounts[$d])) ? $domainUrlCounts[$d] : 1;
+        }
+        $unique = count($records);
+
+        return [
+            'records'   => $records,
+            'submitted' => $submitted,
+            'unique'    => $unique,
+            'merged'    => max(0, $submitted - $unique),
+        ];
+    }
+
     /** Parse + de-duplicate the input list into backlink records (no fetch). */
     public static function parseRecords($text, $opts, $cfg): array
     {
-        $backlinks = self::loadLines($text, $cfg);
-        if (!empty($opts['limit']) && (int)$opts['limit'] > 0) {
-            $backlinks = array_slice($backlinks, 0, (int)$opts['limit']);
-        }
-        return array_values(self::dedupeDomains($backlinks));
+        return self::parseRecordsWithStats($text, $opts, $cfg)['records'];
     }
 
     /** Score + classify + audit one (already-fetched-or-offline) backlink. */
@@ -841,6 +910,57 @@ class Engine
     {
         unset($bl['text_sample'], $bl['meta_description']);
         return $bl;
+    }
+
+    /**
+     * Process ONE small slice of the record list — fetch (if live), score,
+     * classify and audit — and return the live verdicts plus slim records for
+     * persistence between batches.
+     *
+     * This is the ONLY code path the web app uses to do scoring work, and it is
+     * hard-bounded: REQUEST_TIMEOUT caps each domain, OVERALL_DEADLINE caps the
+     * whole slice. A single batch therefore can never run long enough to hit the
+     * host's execution limit or tie up a PHP worker — which is what made the old
+     * "whole list in one request" path hang and lock the subdomain.
+     *
+     * @return array{rows: array<int,array>, slim: array<int,array>}
+     */
+    public static function processSlice($records, $offset, $size, $niche, $pbn, $opts, $cfg): array
+    {
+        $do_fetch = !empty($opts['live']);
+        $cfg['MAX_WORKERS']     = max(1, min(64, (int)($opts['workers'] ?? $cfg['MAX_WORKERS'])));
+        $cfg['VERIFY_SSL']      = !empty($opts['verify_ssl']);
+        $cfg['REQUEST_TIMEOUT'] = 5;    // per-domain hard cap (one dead site can't stall the slice)
+        $cfg['OVERALL_DEADLINE'] = 20;  // whole-slice hard cap (a batch is always short)
+
+        $slice = array_slice($records, (int)$offset, (int)$size, true);
+        $fetched = [];
+        if ($do_fetch && function_exists('curl_multi_init')) {
+            $urls = [];
+            foreach ($slice as $rec) {
+                if (($rec['source_url'] ?? '') !== '') {
+                    $urls[] = $rec['source_url'];
+                }
+            }
+            if ($urls) {
+                $fetched = self::fetchMany($urls, $cfg);
+            }
+        }
+
+        $rows = [];
+        $slim = [];
+        foreach ($slice as $idx => $rec) {
+            if ($do_fetch && isset($fetched[$rec['source_url']])) {
+                $f = $fetched[$rec['source_url']];
+                self::extractSignals($rec, $f['status'], $f['final'], $f['body'], $cfg);
+            } elseif ($do_fetch && ($rec['source_url'] ?? '') !== '') {
+                $rec['fetch_skipped'] = true;
+            }
+            self::processOne($rec, $niche, $pbn, $cfg, $do_fetch);
+            $rows[] = self::verdict($rec);
+            $slim[$idx] = self::slimRecord($rec);
+        }
+        return ['rows' => $rows, 'slim' => $slim];
     }
 
     /** Build the final report payload from already-processed records. */
