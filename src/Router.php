@@ -29,6 +29,13 @@ class Router
             return;
         }
 
+        // (1b) Health / self-test — open WITHOUT login so the host can always be
+        //      diagnosed. Reports the limits that actually break large lists.
+        if (isset($_GET['health'])) {
+            self::health();
+            return;
+        }
+
         // (2) Login gate — asked once per browser, then remembered ~1 year.
         if (Security::authEnabled()) {
             if (isset($_GET['logout'])) {
@@ -139,6 +146,81 @@ class Router
         echo View::form($cfg);
     }
 
+    /**
+     * ?health=1 — a no-login self-test page. It reports the host facts that
+     * actually cause "only ~100 of 700 shown": whether the execution-time limit
+     * can be raised, plus OpenSSL/cURL, writable data dir, and that every src/
+     * class loaded. Share this page to diagnose a stubborn host.
+     */
+    private static function health(): void
+    {
+        if (!headers_sent()) {
+            header('Content-Type: text/html; charset=utf-8');
+            header('Cache-Control: no-store');
+        }
+        $rows = [];
+        $add = function ($name, $ok, $val) use (&$rows) {
+            $rows[] = [$name, $ok, $val];
+        };
+
+        $add('PHP version', version_compare(PHP_VERSION, '7.4.0', '>='), PHP_VERSION);
+        $add('OpenSSL (encryption, login, cache, streaming)', function_exists('openssl_encrypt'),
+            function_exists('openssl_encrypt') ? 'available' : 'MISSING — streaming & cache are disabled');
+        $add('cURL (fetching sites)', function_exists('curl_multi_init'),
+            function_exists('curl_multi_init') ? 'available' : 'MISSING — cannot fetch sites');
+        $add('mbstring', null, extension_loaded('mbstring') ? 'available' : 'polyfill in use (ok)');
+
+        // Execution time — the #1 cause of the "100 of 700" symptom.
+        $before = (int)ini_get('max_execution_time');
+        @set_time_limit(0);
+        $after = (int)ini_get('max_execution_time');
+        $canRaise = ($after === 0 || $after >= 300);
+        $add('max_execution_time', null,
+            ($before === 0 ? 'unlimited' : $before . 's') . ' → after set_time_limit(0): ' . ($after === 0 ? 'unlimited' : $after . 's'));
+        $add('Can the host raise the time limit?', $canRaise,
+            $canRaise ? 'yes — long requests allowed' : 'NO — host caps it. Batch mode handles this automatically.');
+
+        $add('memory_limit', null, ini_get('memory_limit'));
+        $add('post_max_size', null, ini_get('post_max_size'));
+        $add('zlib.output_compression', null, ini_get('zlib.output_compression') ? 'ON (can delay SSE — batch mode unaffected)' : 'off');
+
+        $classes = ['Config', 'Support', 'Engine', 'Security', 'Monitor', 'View'];
+        $missing = array_values(array_filter($classes, fn($c) => !class_exists($c)));
+        $add('All src/ classes loaded', empty($missing),
+            empty($missing) ? 'yes' : 'MISSING: ' . implode(', ', $missing) . ' — upload the whole src/ folder');
+
+        Support::ensureDataDir();
+        $dir = Support::dataDir();
+        $writable = is_dir($dir) && is_writable($dir);
+        $add('Data dir writable (notif_data/)', $writable, $writable ? $dir : 'NOT writable: ' . $dir);
+
+        $enc = Security::encrypt('healthcheck');
+        $dec = $enc !== false ? Security::decrypt($enc) : null;
+        $add('Encrypted cache round-trip', $dec === 'healthcheck',
+            $dec === 'healthcheck' ? 'ok' : 'FAILED — check OpenSSL and NOTIF_SECRET_KEY');
+
+        $add('Login gate', null, Security::authEnabled() ? 'enabled' : 'disabled');
+
+        echo '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>Health check</title>';
+        echo '<style>body{font:14px system-ui,Segoe UI,Arial;margin:28px;color:#1d2327;max-width:780px}'
+            . 'h1{font-size:20px}table{border-collapse:collapse;width:100%}'
+            . 'td{padding:7px 10px;border-bottom:1px solid #eee;vertical-align:top}'
+            . '.s{width:58px;font-weight:700}.ok{color:#08820a}.no{color:#c00}.warn{color:#b66b00}'
+            . 'code{background:#f3f3f3;padding:1px 5px;border-radius:3px}.lead{color:#555;line-height:1.6}</style>';
+        echo '<h1>🩺 Backlink Checker — health check</h1>';
+        echo '<p class="lead">If <b>“Can the host raise the time limit?”</b> is <b style="color:#c00">NO</b>, that is exactly why a big list only showed ~100 in one shot. '
+            . 'The analyzer now runs in small <b>batches</b> (a short request each), so it finishes the whole list regardless. '
+            . 'Anything red below should be fixed.</p>';
+        echo '<table>';
+        foreach ($rows as [$name, $ok, $val]) {
+            $cls = $ok === true ? 'ok' : ($ok === false ? 'no' : 'warn');
+            $tag = $ok === true ? 'PASS' : ($ok === false ? 'FAIL' : 'INFO');
+            echo '<tr><td class="s ' . $cls . '">' . $tag . '</td><td><b>' . Support::h($name) . '</b></td><td>' . Support::h($val) . '</td></tr>';
+        }
+        echo '</table>';
+        echo '<p class="lead">Make sure you uploaded <code>index.php</code> + <code>config.php</code> + the whole <code>src/</code> folder together.</p>';
+    }
+
     /** Gather + sanitise the analyse inputs (textarea or uploaded file). */
     private static function collectInput($cfg): array
     {
@@ -188,6 +270,7 @@ class Router
             $cfg['NICHE_KEYWORDS'] = array_merge($cfg['NICHE_KEYWORDS'], $extra);
         }
 
+        $cfg['REQUEST_TIMEOUT'] = 8;  // keep prepare quick (one target fetch)
         $records = Engine::parseRecords($text, $opts, $cfg);
         $niche   = Engine::buildProfile($opts['target_url'], $cfg, !empty($opts['live']));
         $pbn     = Engine::detectPbnClusters($records, $cfg);

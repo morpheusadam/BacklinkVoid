@@ -703,12 +703,14 @@ HTML;
   </form>
 </div>
 <script>
-// Live spam-check console. Submits the list once (?prepare=1), then streams
-// per-domain verdicts via Server-Sent Events (?sse=1). If the host buffers SSE
-// (no "hello" within ~6s, e.g. Hostinger hcdn), it auto-switches to batch
-// polling (?batch=1). Falls back to a normal POST when streaming is unavailable.
+// Live spam-check console. Submits the list once (?prepare=1), then checks it in
+// small BATCHES (?batch=1) — each a short request, so even a time-limited shared
+// host (e.g. Hostinger) finishes the WHOLE list instead of dying after ~100.
+// Verdicts render line-by-line for a live feel. (A Server-Sent-Events endpoint
+// ?sse=1 also exists for hosts that allow long streaming, but batching is the
+// reliable default.) Falls back to a normal POST when JS/OpenSSL is unavailable.
 var STREAM_OK = {$stream_ok};
-var BATCH = 20;
+var BATCH = 12;
 var TERM = {};
 function el(id){ return document.getElementById(id); }
 
@@ -724,8 +726,9 @@ function el(id){ return document.getElementById(id); }
 
 function startCheck(form){
   TERM = { t0:Date.now(), checked:0, total:0, counts:{clean:0,suspicious:0,spam:0},
-           spam:[], finished:false, polling:false, reportUrl:'?report=1', es:null, fbTimer:null, timer:null };
-  el('term').hidden = false;
+           spam:[], queue:[], draining:false, lastBatch:false, finished:false,
+           reportUrl:'?report=1', timer:null };
+  el('term').hidden = false;                 // ALWAYS show the console immediately
   el('termActions').hidden = true; el('termClose').hidden = true;
   el('termBody').innerHTML = '<span class="cur"></span>';
   setCounts(); setStat('preparing…');
@@ -735,62 +738,59 @@ function startCheck(form){
     if(!TERM.finished){ el('termSpin').textContent = frames[fi=(fi+1)%frames.length]; }
   }, 200);
 
-  line('$ spam-check  (preparing job…)', 'l-cmd');
+  line('$ spam-check  (preparing…)', 'l-cmd');
   fetch('?prepare=1', {method:'POST', body:new FormData(form), credentials:'same-origin'})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    .then(function(r){ return r.text(); })
+    .then(function(t){
+      var d; try { d = JSON.parse(t); }
+      catch(e){ fail('prepare did not return JSON (host/deploy issue) — open  ?health=1'); return; }
       if(!d || !d.ok){ fail(d && d.error ? d.error : 'prepare failed'); return; }
       TERM.total = d.total;
-      line('· '+d.total+' unique domain(s) queued', 'l-info');
-      setStat('0 / '+d.total);
-      if(window.EventSource){ startSSE(); } else { startPolling(); }
+      if(!TERM.total){ fail('no valid domains found in the input'); return; }
+      line('· '+TERM.total+' unique domain(s) queued', 'l-info');
+      // Batch polling: each request is short, so a time-limited host still
+      // finishes the WHOLE list. This is the reliable default.
+      line('$ checking in batches of '+BATCH+' …', 'l-cmd');
+      setStat('0 / '+TERM.total);
+      poll(0);
     })
-    .catch(function(e){ fail('prepare error: '+(e&&e.message?e.message:e)); });
+    .catch(function(e){ fail('prepare failed: '+(e&&e.message?e.message:e)+'  — open  ?health=1'); });
 }
 
-function startSSE(){
-  line('· connecting (SSE)…', 'l-info');
-  var es; try { es = new EventSource('?sse=1'); } catch(e){ startPolling(); return; }
-  TERM.es = es;
-  TERM.fbTimer = setTimeout(function(){            // no "hello" => host buffered SSE
-    if(!TERM.finished){ line('· host buffered the stream — switching to batch mode…','l-warn'); closeES(); startPolling(); }
-  }, 6000);
-  es.addEventListener('hello',   function(){ clearTimeout(TERM.fbTimer); line('· streaming connected','l-info'); });
-  es.addEventListener('item',    function(ev){ onItem(JSON.parse(ev.data)); });
-  es.addEventListener('summary', function(ev){ onSummary(JSON.parse(ev.data)); });
-  es.addEventListener('done',    function(ev){ TERM.finished = true; closeES(); onDone(JSON.parse(ev.data)); });
-  es.addEventListener('fail',    function(ev){ TERM.finished = true; closeES(); fail((JSON.parse(ev.data)||{}).msg||'failed'); });
-  es.onerror = function(){
-    if(TERM.finished){ closeES(); return; }
-    clearTimeout(TERM.fbTimer); closeES();
-    line('· stream interrupted — switching to batch mode…','l-warn');
-    startPolling();
-  };
-}
-function closeES(){ if(TERM.es){ try{TERM.es.close();}catch(e){} TERM.es = null; } }
-
-function startPolling(){
-  if(TERM.polling || TERM.finished) return;
-  TERM.polling = true;
-  // SSE arrives in fetch-completion order, so restart the verdict list cleanly.
-  el('termBody').innerHTML = '<span class="cur"></span>';
-  TERM.checked = 0; TERM.counts = {clean:0,suspicious:0,spam:0}; TERM.spam = [];
-  setCounts();
-  line('$ spam-check --batch '+BATCH, 'l-cmd');
-  poll(0);
-}
 function poll(offset){
   var fd = new FormData(); fd.append('offset', offset); fd.append('size', BATCH);
   fetch('?batch=1', {method:'POST', body:fd, credentials:'same-origin'})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    .then(function(r){ return r.text(); })
+    .then(function(t){
+      var d; try { d = JSON.parse(t); }
+      catch(e){ fail('batch did not return JSON — open  ?health=1'); return; }
       if(!d || !d.ok){ fail(d && d.error ? d.error : 'batch failed'); return; }
-      (d.results||[]).forEach(onItem);
-      setStat(Math.min(d.next,d.total)+' / '+d.total);
-      if(d.done){ onSummary({total:d.total, clean:TERM.counts.clean, suspicious:TERM.counts.suspicious, spam:TERM.counts.spam}); onDone({report:d.report}); }
+      setStat(Math.min(d.next, d.total)+' / '+d.total);
+      enqueue(d.results || []);
+      if(d.done){ TERM.lastBatch = true; TERM.reportUrl = d.report || '?report=1'; drain(); }
       else { poll(d.next); }
     })
-    .catch(function(e){ fail('batch error: '+(e&&e.message?e.message:e)); });
+    .catch(function(e){ fail('batch failed: '+(e&&e.message?e.message:e)); });
+}
+
+// Render queued verdicts smoothly (~12ms each) for a live line-by-line feel,
+// independent of the network polling above.
+function enqueue(list){ for(var i=0;i<list.length;i++){ TERM.queue.push(list[i]); } drain(); }
+function drain(){
+  if(TERM.draining) return;
+  TERM.draining = true;
+  (function step(){
+    if(TERM.queue.length === 0){
+      TERM.draining = false;
+      if(TERM.lastBatch && !TERM.finished){
+        onSummary({total:TERM.total, clean:TERM.counts.clean, suspicious:TERM.counts.suspicious, spam:TERM.counts.spam});
+        onDone({report:TERM.reportUrl});
+      }
+      return;
+    }
+    onItem(TERM.queue.shift());
+    setTimeout(step, 12);
+  })();
 }
 
 function pad(s, n){ s = String(s); while(s.length < n){ s += ' '; } return s; }
