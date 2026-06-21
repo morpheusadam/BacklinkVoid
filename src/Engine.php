@@ -101,14 +101,20 @@ class Engine
             }
             $url = $queue[$i];
             $i++;
+            // Per-domain hard caps so ONE dead/slow site can never stall the run.
+            $timeout = max(2, (int)$cfg['REQUEST_TIMEOUT']);
             $ch = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_MAXREDIRS => 5,
-                CURLOPT_TIMEOUT => (int)$cfg['REQUEST_TIMEOUT'],
-                CURLOPT_CONNECTTIMEOUT => min((int)$cfg['REQUEST_TIMEOUT'], 8),
+                CURLOPT_MAXREDIRS => 4,
+                CURLOPT_TIMEOUT => $timeout,                          // hard total cap
+                CURLOPT_CONNECTTIMEOUT => max(2, min($timeout, 4)),   // fast-fail dead hosts
+                CURLOPT_NOSIGNAL => 1,                               // timeouts honored without SIGALRM
+                CURLOPT_LOW_SPEED_LIMIT => 200,                      // abort domains that...
+                CURLOPT_LOW_SPEED_TIME => $timeout,                  // ...trickle < 200 B/s for $timeout s
+                CURLOPT_FRESH_CONNECT => false,
                 CURLOPT_SSL_VERIFYPEER => (bool)$cfg['VERIFY_SSL'],
                 CURLOPT_SSL_VERIFYHOST => $cfg['VERIFY_SSL'] ? 2 : 0,
                 CURLOPT_USERAGENT => $cfg['USER_AGENT'],

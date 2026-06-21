@@ -359,6 +359,7 @@ class Router
         $cfg['MAX_WORKERS'] = max(1, min(64, (int)$opts['workers']));
         $cfg['VERIFY_SSL'] = !empty($opts['verify_ssl']);
         $cfg['REQUEST_TIMEOUT'] = 5;  // 5s per request so the server never locks
+        $cfg['OVERALL_DEADLINE'] = 25;
         Debug::log('sse: streaming ' . count($records) . ' domain(s), live=' . ($do_fetch ? 'yes' : 'no'));
 
         $counts = ['spam' => 0, 'suspicious' => 0, 'clean' => 0];
@@ -437,6 +438,7 @@ class Router
         $cfg['MAX_WORKERS'] = max(1, min(64, (int)$opts['workers']));
         $cfg['VERIFY_SSL'] = !empty($opts['verify_ssl']);
         $cfg['REQUEST_TIMEOUT'] = 5;
+        $cfg['OVERALL_DEADLINE'] = 25;  // a single batch can never run long
 
         $slice = array_slice($records, $offset, $size, true);
         $fetched = [];

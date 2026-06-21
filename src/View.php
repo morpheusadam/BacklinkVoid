@@ -759,20 +759,33 @@ function startCheck(form){
     .catch(function(e){ fail('prepare failed: '+(e&&e.message?e.message:e)+'  — open  ?health=1'); });
 }
 
-function poll(offset){
+function poll(offset, attempt){
+  attempt = attempt || 0;
   var fd = new FormData(); fd.append('offset', offset); fd.append('size', BATCH);
   fetch('?batch=1', {method:'POST', body:fd, credentials:'same-origin'})
     .then(function(r){ return r.text(); })
     .then(function(t){
       var d; try { d = JSON.parse(t); }
-      catch(e){ fail('batch did not return JSON — open  ?health=1'); return; }
-      if(!d || !d.ok){ fail(d && d.error ? d.error : 'batch failed'); return; }
+      catch(e){ return retryBatch(offset, attempt, 'batch did not return JSON (tick likely killed)'); }
+      if(!d || !d.ok){ return retryBatch(offset, attempt, d && d.error ? d.error : 'batch failed'); }
       setStat(Math.min(d.next, d.total)+' / '+d.total);
       enqueue(d.results || []);
       if(d.done){ TERM.lastBatch = true; TERM.reportUrl = d.report || '?report=1'; drain(); }
-      else { poll(d.next); }
+      else { poll(d.next, 0); }
     })
-    .catch(function(e){ fail('batch failed: '+(e&&e.message?e.message:e)); });
+    .catch(function(e){ retryBatch(offset, attempt, 'network: '+(e&&e.message?e.message:e)); });
+}
+// A failed/killed tick is RESUMABLE: retry the SAME offset (the server's batch is
+// idempotent — it just re-checks that slice). So one dead tick never ends the run.
+function retryBatch(offset, attempt, why){
+  if(TERM.finished) return;
+  if(attempt < 4){
+    var wait = 700 * (attempt + 1);
+    line('· batch @'+offset+' failed ('+why+') — resuming in '+(wait/1000).toFixed(1)+'s ['+(attempt+1)+'/4]', 'l-warn');
+    setTimeout(function(){ poll(offset, attempt + 1); }, wait);
+  } else {
+    fail('batch @'+offset+' failed after 4 retries: '+why+'  — open ?debug=1 / ?health=1');
+  }
 }
 
 // Render queued verdicts smoothly (~12ms each) for a live line-by-line feel,
