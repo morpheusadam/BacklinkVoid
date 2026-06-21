@@ -25,7 +25,9 @@ class Router
                 return;
             }
             // ?force=1 bypasses the 7-day throttle for a manual test run.
-            echo Monitor::runCheck(isset($_GET['force']) && $_GET['force'] === '1', $cfg) . "\n";
+            $res = Monitor::runCheck(isset($_GET['force']) && $_GET['force'] === '1', $cfg);
+            Debug::log('cron: ' . $res);
+            echo $res . "\n";
             return;
         }
 
@@ -62,6 +64,26 @@ class Router
 
         // Logged in (or login disabled). Establish this browser's cache id.
         $uid = Security::clientUid();
+
+        // (2b) Debug log viewer (login-gated): ?debug=1 / ?debug=download / ?debug=clear
+        if (isset($_GET['debug'])) {
+            $d = (string)$_GET['debug'];
+            if ($d === 'clear') {
+                Debug::clearLog();
+                header('Location: ?debug=1');
+                return;
+            }
+            if ($d === 'download') {
+                if (!headers_sent()) {
+                    header('Content-Type: text/plain; charset=utf-8');
+                    header('Content-Disposition: attachment; filename="debug.log"');
+                }
+                echo Debug::readLog();
+                return;
+            }
+            echo Debug::renderViewer();
+            return;
+        }
 
         // (3) "Backlink Notif" tab — GET view (?tab=notif) or its POST actions.
         if (($_GET['tab'] ?? '') === 'notif' || strpos((string)($_POST['action'] ?? ''), 'notif_') === 0) {
@@ -130,7 +152,9 @@ class Router
                 $cfg['NICHE_KEYWORDS'] = array_merge($cfg['NICHE_KEYWORDS'], $extra);
             }
 
+            Debug::log('analyze (no-JS POST): full pipeline on the WHOLE list in ONE request — the path that dies on time-limited hosts');
             $r = Engine::runPipeline($text, $opts, $cfg);
+            Debug::log('analyze (no-JS POST): done — ' . count($r['prospects']) . ' prospects, ' . count($r['avoid']) . ' avoid');
             $html = View::report($r, $opts);
 
             // Cache the finished report for this browser, then PRG-redirect.
@@ -270,10 +294,13 @@ class Router
             $cfg['NICHE_KEYWORDS'] = array_merge($cfg['NICHE_KEYWORDS'], $extra);
         }
 
+        Debug::silentPage(); // JSON response — log errors, never echo them
         $cfg['REQUEST_TIMEOUT'] = 8;  // keep prepare quick (one target fetch)
         $records = Engine::parseRecords($text, $opts, $cfg);
+        Debug::log('prepare: parsed ' . count($records) . ' unique domain(s), live=' . (!empty($opts['live']) ? 'yes' : 'no') . ', workers=' . (int)$opts['workers']);
         $niche   = Engine::buildProfile($opts['target_url'], $cfg, !empty($opts['live']));
         $pbn     = Engine::detectPbnClusters($records, $cfg);
+        Debug::log('prepare: profile=' . count($niche) . 'kw, pbn=' . count($pbn) . ' — storing job');
 
         $job = [
             'records' => $records, 'niche' => $niche, 'pbn' => $pbn,
@@ -291,6 +318,7 @@ class Router
      */
     private static function sseStream($cfg, $uid): void
     {
+        Debug::silentPage(); // SSE stream — never inject error HTML into it
         // Defeat output buffering / compression so each event flushes live.
         @ini_set('zlib.output_compression', '0');
         @ini_set('output_buffering', '0');
@@ -331,6 +359,7 @@ class Router
         $cfg['MAX_WORKERS'] = max(1, min(64, (int)$opts['workers']));
         $cfg['VERIFY_SSL'] = !empty($opts['verify_ssl']);
         $cfg['REQUEST_TIMEOUT'] = 5;  // 5s per request so the server never locks
+        Debug::log('sse: streaming ' . count($records) . ' domain(s), live=' . ($do_fetch ? 'yes' : 'no'));
 
         $counts = ['spam' => 0, 'suspicious' => 0, 'clean' => 0];
         $byUrl = [];
@@ -400,6 +429,8 @@ class Router
         $pbn = $job['pbn'];
         $opts = $job['opts'];
         $total = count($records);
+        Debug::silentPage();
+        $bt = microtime(true);
         $offset = max(0, (int)($_POST['offset'] ?? 0));
         $size = min(40, max(1, (int)($_POST['size'] ?? 20)));
         $do_fetch = !empty($opts['live']);
@@ -435,6 +466,7 @@ class Router
             $slim[$idx] = Engine::slimRecord($rec);
         }
         Security::cachePut($uid, 'prog_' . $offset, json_encode($slim, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        Debug::log('batch off=' . $offset . ' size=' . $size . ' checked=' . count($out) . ' fetched=' . count($fetched) . ' in ' . round((microtime(true) - $bt) * 1000) . 'ms');
 
         $next = $offset + count($slice);
         $done = $next >= $total;

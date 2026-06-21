@@ -77,6 +77,10 @@ spl_autoload_register(function ($class) {
     }
 });
 
+// Diagnostics first, so a fatal/time-limit/memory kill anywhere below is caught,
+// logged to notif_data/debug.log, and shown on the page (when DEBUG is on).
+Debug::init();
+
 // Build the runtime config and dispatch the request.
 $CFG = Config::defaults();
 Router::dispatch($CFG);

@@ -90,6 +90,8 @@ class Engine
         $i = 0;
         $n = count($queue);
         $deadline = time() + (int)$cfg['OVERALL_DEADLINE'];
+        $fm_start = microtime(true);
+        $fm_hit = false;
         $mh = curl_multi_init();
         $active = [];
 
@@ -158,6 +160,7 @@ class Engine
                 curl_multi_select($mh, 1.0);
             }
             if (time() > $deadline) {
+                $fm_hit = true;
                 break;
             }
         } while ($running > 0 || $i < $n || count($active) > 0);
@@ -167,6 +170,9 @@ class Engine
             curl_close($a['ch']);
         }
         curl_multi_close($mh);
+        Debug::log('fetchMany: requested=' . $n . ' completed=' . count($results)
+            . ' deadline_hit=' . ($fm_hit ? 'YES (overall deadline)' : 'no')
+            . ' in ' . round(microtime(true) - $fm_start, 1) . 's');
         return $results;
     }
 

@@ -567,6 +567,7 @@ HTML;
         // The streaming terminal needs the encrypted cache (OpenSSL). When it is
         // unavailable the form falls back to a normal POST.
         $stream_ok = function_exists('openssl_encrypt') ? 'true' : 'false';
+        $debug_badge = Debug::badge();
 
         return <<<HTML
 <!DOCTYPE html>
@@ -671,6 +672,7 @@ HTML;
     </div>
   </div>
 </div>
+{$debug_badge}
 <div class="wrap">
   {$topnav}
   <h1>Backlink Prospect Scorer</h1>

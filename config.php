@@ -13,6 +13,15 @@
  * ===========================================================================
  */
 
+// --- Debug / diagnostics ----------------------------------------------------
+// true  = WordPress-style debugging: shows errors on the page, captures fatal
+//         /time-limit/memory kills, and writes notif_data/debug.log (view it at
+//         ?debug=1). This is how you find out why a big list stops at ~100.
+// SET THIS TO false ONCE EVERYTHING WORKS (it can reveal internal details).
+if (!defined('DEBUG')) {
+    define('DEBUG', true);
+}
+
 // --- Login gate (asked once per browser, then remembered ~1 year) ----------
 // Set BOTH to '' to disable the login entirely.
 if (!defined('AUTH_USER')) {
