@@ -1,195 +1,127 @@
-<!-- ANIMATED HEADER -->
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=210&section=header&text=Backlink%20Void%20Checker&fontSize=46&fontColor=ffffff&animation=fadeIn&desc=Score%20%E2%80%A2%20Audit%20%E2%80%A2%20Disavow%20%E2%80%A2%20Monitor&descSize=18&descAlignY=64" alt="Backlink Void Checker" />
+<div align="center">
+
+# 🛡️ Backlink Void Checker
+
+### Score backlink prospects 0–100, audit existing links for spam & toxicity, auto-generate a Google Disavow file, and get weekly Telegram alerts — a PHP web app + Python CLI with no database and no build step.
+
+<p>
+  <img src="https://img.shields.io/github/license/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=4c1" alt="License" />
+  <img src="https://img.shields.io/github/stars/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=ffca28" alt="Stars" />
+  <img src="https://img.shields.io/github/forks/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=42a5f5" alt="Forks" />
+  <img src="https://img.shields.io/github/last-commit/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=8e44ad" alt="Last commit" />
+  <img src="https://img.shields.io/github/repo-size/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=e67e22" alt="Repo size" />
 </p>
 
-<!-- ANIMATED TYPING SUBTITLE -->
-<p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&duration=3200&pause=900&color=6E8EFB&center=true&vCenter=true&width=820&lines=Rank+every+backlink+prospect+from+0+to+100;Auto-build+a+Google+Disavow+file+in+one+click;Weekly+Telegram+alerts+when+a+link+turns+toxic;PHP+web+app+%2B+Python+CLI+%E2%80%94+no+database%2C+no+build+step" alt="What it does" />
+<p>
+  <img src="https://img.shields.io/badge/PHP-7.4%2B-777BB4?style=for-the-badge&logo=php&logoColor=white" alt="PHP" />
+  <img src="https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/Database-None-2EA44F?style=for-the-badge&logo=sqlite&logoColor=white" alt="No database" />
+  <img src="https://img.shields.io/badge/Build-None-2EA44F?style=for-the-badge&logo=gnubash&logoColor=white" alt="No build step" />
+  <img src="https://img.shields.io/badge/Telegram-Alerts-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram alerts" />
 </p>
 
-<!-- BADGES -->
-<p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/release-v2.0.0-6E8EFB?style=for-the-badge">
-  <img alt="PHP" src="https://img.shields.io/badge/PHP-7.4%2B-777BB4?style=for-the-badge&logo=php&logoColor=white">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white">
-  <img alt="Database" src="https://img.shields.io/badge/database-none-2EA44F?style=for-the-badge">
-  <img alt="Build" src="https://img.shields.io/badge/build-none-2EA44F?style=for-the-badge">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-0A7BBB?style=for-the-badge">
-</p>
+</div>
 
-<p align="center">
-  <b>Score backlink prospects, audit existing links for spam / toxicity, generate a
-  ready-to-upload Google Disavow file, and get weekly Telegram alerts.</b>
+---
+
+## 📖 Overview
+
+**Backlink Void Checker** is an **SEO backlink auditing tool** that ranks every domain in your link list **0–100** by how valuable a backlink from it would really be for *your* site — weighing relevance, authority, guest-post friendliness, domain health, TLD / language / geo fit, and spam-safety. The unusable sources (piracy / adult / gambling, dead, parked, de-indexed) are pushed into an **Avoid** list, and the genuinely spam / toxic ones are compiled into a **ready-to-upload Google Disavow file** for Search Console.
+
+It is built for **SEO specialists, link builders, bloggers, and agencies** who want a transparent, no-API way to qualify outreach prospects and protect a site from toxic links. The tool runs as a **PHP web app** for cPanel / shared hosting (browser UI, no command line) *and* as a **dependency-free Python CLI** for automation and cron — with **no database and no build step** in either edition.
+
+A built-in **Backlink Notif** monitor watches your existing backlinks and sends a **weekly Telegram alert** whenever one of them turns spam / toxic, so link rot never goes unnoticed.
+
+> 🔎 **Keywords:** backlink checker, backlink audit, SEO toxicity audit, link prospecting tool, Google Disavow file generator, toxic backlink detector, spam link checker, link building tool, PHP SEO tool, Python SEO CLI, Telegram backlink monitor.
+
+---
+
+## ✨ Features
+
+- 🎯 **Prospect scoring** — six weighted factors with a transparent per-row "why" breakdown for every domain.
+- 🚫 **Avoid list** — toxic neighborhoods plus dead / parked / de-indexed pages are auto-excluded from your prospects.
+- 📄 **Google Disavow tab** — one click downloads `disavow.txt` (`domain:` lines, with the matched signal as a comment). Conservative by design: only genuinely spam / toxic domains are listed — never healthy links.
+- 📊 **Exports** — PDF, **Excel** (`.xls`), and CSV, scoped to *all results* or *guest-post-only*.
+- 🔔 **Backlink Notif** — paste your live backlinks plus a Telegram bot token and get a weekly DM listing any newly spam / toxic domains (runs for 1 year per start, via cron).
+- 🔐 **Login gate** — username / password, asked **once per browser** then remembered ~1 year via a signed cookie.
+- ♻️ **Refresh-safe encrypted cache** — large lists are analyzed once; a refresh re-serves an **encrypted, per-browser** cached report instead of re-running, with a live loading timer.
+- 🛡️ **Privacy first** — all at-rest data (monitor settings, cache) is **AES-256-CBC encrypted with HMAC authentication**; the Telegram token and chat id are never rendered to the page.
+- 🪶 **Zero dependencies / no database** — the Python CLI is pure standard library; the PHP app only needs cURL + OpenSSL. No build step in either edition.
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Web app | **PHP 7.4+** (object-oriented, one class per file) — cURL + OpenSSL |
+| CLI | **Python 3.8+** (standard library only) |
+| Crypto | **AES-256-CBC**, encrypt-then-HMAC, signed login cookie |
+| Storage | **None** — flat encrypted files for monitor state & cache |
+| Alerts | **Telegram Bot API** (weekly, via cron) |
+| Output | HTML report · **PDF · Excel (.xls) · CSV** · `disavow.txt` |
+
+<p>
+  <img src="https://skillicons.dev/icons?i=php,python,bash" alt="Tech stack" />
 </p>
 
 ---
 
-## Overview
+## 🚀 Getting Started
 
-You have a list of domains — either **candidates you want a link from**, or
-**sources that already link to you**. This tool:
+### Web app (cPanel / shared hosting)
 
-1. **Ranks** each domain 0–100 by how good a backlink from it would be for *your*
-   site — relevance, authority, guest-post friendliness, domain health, TLD /
-   language / geo fit, and spam-safety.
-2. **Separates** the unusable ones (piracy / adult / gambling, dead, parked,
-   de-indexed) into an **Avoid** list.
-3. **Builds a Google Disavow file** from the spam / toxic domains, ready to upload
-   to Search Console.
-4. **Monitors** a saved list of your existing backlinks and **alerts you on
-   Telegram** if any of them ever turns spam / toxic (weekly, via cron).
+**Prerequisites:** PHP **7.4+** with the **cURL** and **OpenSSL** extensions (standard on cPanel). `mbstring` is used if present but not required.
 
-It ships in **two editions**:
+1. In cPanel **File Manager**, upload the whole project into a folder under `public_html` (e.g. `public_html/backlink/`) so `index.php`, `config.php`, the `src/` folder and `.htaccess` are all there.
+2. Open it in a browser: `https://yourdomain.com/backlink/`.
+3. Sign in (default `admin` / `adminA` — **change these**, see Configuration).
+4. Enter your site URL, paste candidate domains (one per line; optional `domain,DR,spam`) or upload a `.txt` / `.csv`, and click **Analyze & rank**.
+5. Review the **Prospects** and **Google Disavow** tabs; export as PDF / Excel / CSV.
 
-| Edition | File | Use it when |
-|---|---|---|
-| **Web app** (PHP) | `index.php` + `src/` | You want a browser UI on cPanel / shared hosting — no command line. |
-| **Terminal** (Python) | [`terminal-version/`](terminal-version/) | You prefer a CLI, automation, or running on a server / cron. |
+### Terminal version (Python CLI)
+
+```bash
+git clone https://github.com/morpheusadam/backlinkvoidchecker.git
+cd backlinkvoidchecker/terminal-version
+
+# Rank a list for your site (HTML report + CSV)
+python backlink_evaluator.py --input backlinks.txt --target-url "https://your-site.com"
+
+# Custom outputs, extra niche keywords, more workers
+python backlink_evaluator.py -i backlinks.txt -o report.html --csv-out out.csv --niche "fintech, saas" --workers 16
+
+# Skip live fetching (offline — name / TLD scoring only)
+python backlink_evaluator.py -i backlinks.txt --no-fetch
+```
+
+> The Excel / Google-Disavow exports and the weekly Telegram monitor are currently **web-app features**; porting them to the CLI is planned. See [`terminal-version/README.md`](terminal-version/README.md) for all CLI flags.
 
 ---
 
-## Architecture
+## 📊 Scoring Weights
 
-The web app is a clean object-oriented design: `Router` dispatches, `Engine`
-analyses, `View` renders, while `Security` and `Monitor` handle encryption and
-the Telegram monitor. `index.php` only bootstraps the autoloader and config.
-
-```mermaid
-flowchart LR
-    U([Browser / CLI request]) --> R
-
-    subgraph APP["src/ — one class per file"]
-        direction LR
-        R["Router<br/>dispatch + Notif controller"]
-        E["Engine<br/>fetch → profile → score"]
-        V["View<br/>HTML: report · form · login"]
-        SEC["Security<br/>AES-256-CBC · HMAC"]
-        M["Monitor<br/>state store · Telegram · scan"]
-        C["Config<br/>weights · patterns · TLDs"]
-        S2["Support<br/>escaping · URL/domain parse"]
-
-        R --> E
-        R --> M
-        R --> SEC
-        E --> V
-        E -. reads .-> C
-        E -. reads .-> S2
-        M --> SEC
-        M -. reads .-> C
-    end
-
-    V --> OUT([Report · Disavow · PDF / Excel / CSV])
-    M --> TG([Weekly Telegram DM])
-
-    classDef core fill:#11182722,stroke:#6E8EFB,stroke-width:1px,color:#e5e7eb;
-    class R,E,V,SEC,M,C,S2 core;
-```
-
----
-
-## Scoring pipeline
-
-Every domain flows through the same pipeline. Live mode fetches and profiles the
-page; offline mode scores from the name and TLD only.
-
-```mermaid
-flowchart TD
-    A([Domain list<br/>txt · csv · paste]) --> B{Live fetch?}
-    B -- yes --> C[Profile page<br/>content · HTTPS · indexability · parked]
-    B -- no --> D[Name / TLD signals only]
-    C --> E[Score 6 weighted factors]
-    D --> E
-    E --> F{Healthy &amp; safe?}
-    F -- yes --> G[[Prospects · ranked 0–100]]
-    F -- spam / toxic --> H[[Avoid list]]
-    H --> I[[disavow.txt for Search Console]]
-
-    classDef good fill:#06351f,stroke:#2EA44F,color:#d1fae5;
-    classDef bad fill:#3a0d0d,stroke:#ef4444,color:#fee2e2;
-    class G good;
-    class H,I bad;
-```
-
-### Weights at a glance
-
-```mermaid
-pie showData
-    title Scoring weight distribution
-    "Relevance" : 30
-    "Authority" : 25
-    "Domain health" : 13
-    "Link-friendliness" : 12
-    "TLD / language / geo" : 10
-    "Spam safety" : 10
-```
+Every domain flows through the same pipeline: live mode fetches and profiles the page, offline mode scores from the name and TLD only. Weights normalise over whatever signals are available — **start outreach at the top of the list and prioritise rows tagged "guest post".**
 
 | Factor | Weight | Meaning |
-|---|--:|---|
+| --- | --: | --- |
 | Relevance | 30 | Topic match to your site (a relevant link is worth the most) |
-| Authority | 25 | Domain strength (real DR if you provide it, else a content proxy) |
-| Link-friendliness | 12 | Openly accepts guest posts → realistic to win |
+| Authority | 25 | Domain strength (real DR if provided, else a content proxy) |
 | Domain health | 13 | Live, indexable, real content, not parked |
+| Link-friendliness | 12 | Openly accepts guest posts → realistic to win |
 | TLD / language / geo | 10 | Reputable TLD, language fit |
 | Spam safety | 10 | NOT a PBN / toxic neighborhood (a bad source can hurt you) |
 
-Weights normalise over whatever signals are available. **Start outreach at the top
-of the list, and prioritise rows tagged "guest post".**
-
-> **Authority is approximate in live mode.** Without a paid API the tool proxies
-> authority from content / HTTPS / indexing. For an accurate ranking, feed a CSV
-> with a `dr` / domain-rating column (Ahrefs / Moz / Semrush) — it is used
-> automatically.
+> ⚠️ **Authority is approximate in live mode.** Without a paid API the tool proxies authority from content / HTTPS / indexing. For an accurate ranking, feed a CSV with a `dr` / domain-rating column (Ahrefs / Moz / Semrush) — it is used automatically.
 
 ---
 
-## Features
+## ⚙️ Configuration
 
-- **Prospect scoring** — six weighted factors, transparent per-row "why" breakdown.
-- **Avoid list** — toxic neighborhoods, dead / parked / de-indexed pages auto-excluded.
-- **Google Disavow tab** — one click to download `disavow.txt` (`domain:` lines, with
-  the matched signal as a comment). Conservative by design: only genuinely spam /
-  toxic domains are listed — never healthy links.
-- **Exports** — PDF, **Excel** (`.xls`), and CSV, scoped to *all results* or
-  *guest-post-only*.
-- **Backlink Notif** — paste your live backlinks + a Telegram bot token; get a weekly
-  DM listing any newly spam / toxic domains. Runs for 1 year per start.
-- **Login** — a username / password gate, asked **once per browser** then remembered
-  ~1 year via a signed cookie.
-- **Refresh-safe, encrypted cache** — big lists are analysed once; refreshing the
-  results page re-serves an **encrypted, per-browser** cached report instead of
-  re-running. A loading overlay with a live timer shows progress meanwhile.
-- **Privacy first** — all at-rest data (monitor settings, cache) is **AES-256-CBC
-  encrypted with HMAC authentication**; the Telegram token and chat id are stored only
-  in that encrypted file and never rendered to the page (shown as dots).
-
----
-
-## Quick start — Web app (cPanel / shared hosting)
-
-1. In cPanel **File Manager**, upload the whole project into a folder under
-   `public_html` (e.g. `public_html/backlink/`) so `index.php`, `config.php`, the
-   `src/` folder and `.htaccess` are all there.
-2. Open it in a browser: `https://yourdomain.com/backlink/`.
-3. Sign in (default `admin` / `adminA` — **change these**, see Configuration).
-4. Enter your site URL, paste candidate domains (one per line; optional
-   `domain,DR,spam`) or upload a `.txt` / `.csv`, and click **Analyze & rank**.
-5. Review the **Prospects** and **Google Disavow** tabs; export as PDF / Excel / CSV.
-
-**Requirements:** PHP **7.4+** with the **cURL** and **OpenSSL** extensions (standard
-on cPanel). `mbstring` is used if present but not required.
-
----
-
-<details>
-<summary><b>Configuration</b> — settings, secrets, and going-live checklist</summary>
-
-<br>
-
-Everything you need to change lives in **`config.php`** (root):
+Everything you normally change lives in **`config.php`** (root):
 
 | Setting | Purpose | Default |
-|---|---|---|
+| --- | --- | --- |
 | `AUTH_USER` / `AUTH_PASS` | Login credentials (set both to `''` to disable) | `admin` / `adminA` |
 | `ACCESS_PASSWORD` | Optional extra password on POST actions | `''` |
 | `NOTIF_SECRET_KEY` | **At-rest encryption key — change to a long random string** | placeholder |
@@ -197,58 +129,21 @@ Everything you need to change lives in **`config.php`** (root):
 | `NOTIF_INTERVAL` | Weekly-check throttle | 7 days |
 | `NOTIF_DURATION` | Monitor lifetime | 1 year |
 
-> **Keep real secrets out of git:** create a `config.local.php` next to `config.php`
-> with the same `define()` lines and your real values. It is loaded first and is
-> **git-ignored**, so your secrets are never committed. The defaults in `config.php`
-> only apply to whatever you have not already defined.
+> Keep real secrets out of git: create a **`config.local.php`** next to `config.php` with the same `define()` lines and your real values. It is loaded first and is git-ignored. **Change `admin` / `adminA` and `NOTIF_SECRET_KEY` before going live.**
 
-> **Change `admin` / `adminA` and `NOTIF_SECRET_KEY` before going live.**
+**Weekly Telegram monitor (cron):**
 
-</details>
+```cron
+0 9 * * 1 curl -fsS "https://YOURDOMAIN/backlink/index.php?cron=run&token=PUT-YOUR-CRON-TOKEN-HERE" >/dev/null 2>&1
+```
 
-<details>
-<summary><b>Weekly Telegram monitor (cron)</b> — set up the automated audit</summary>
-
-<br>
-
-1. Open the **Backlink Notif** tab, paste your existing backlink domains, and your
-   Telegram **bot token** (from [@BotFather](https://t.me/BotFather)) and **chat id**
-   (from [@userinfobot](https://t.me/userinfobot)). Message your bot once so it can DM
-   you. Submit — you will get a "Backlink Checker started" confirmation.
-2. In cPanel, go to **Cron Jobs** and add one weekly job (replace host + token):
-
-   ```cron
-   0 9 * * 1 curl -fsS "https://YOURDOMAIN/backlink/index.php?cron=run&token=PUT-YOUR-CRON-TOKEN-HERE" >/dev/null 2>&1
-   ```
-
-   The endpoint **self-throttles to once / 7 days**, so triggering it more often is
-   harmless. It alerts you only about **newly** spam / toxic domains.
-
-</details>
-
-<details>
-<summary><b>Security model</b> — how data is protected at rest and in transit</summary>
-
-<br>
-
-- The web app **fetches arbitrary URLs server-side**. If the host is public, keep the
-  login enabled and / or add cPanel **Directory Privacy**.
-- `config.php`, `config.local.php`, and the entire `src/` directory are blocked from
-  direct web access via `.htaccess` (defense in depth).
-- The `notif_data/` directory (encrypted monitor state + per-browser cache) is
-  auto-created with a deny-all `.htaccess` and is **git-ignored**.
-- Encryption: **AES-256-CBC**, **encrypt-then-HMAC** (tamper-evident), with independent
-  derived keys. The login cookie is HMAC-signed.
-- The browser is told **`no-store`**; refresh-safe results come from the server-side
-  encrypted cache, not the browser cache.
-
-</details>
+The endpoint self-throttles to once / 7 days and only alerts about **newly** spam / toxic domains.
 
 ---
 
-## Project structure
+## 🗂️ Project Structure
 
-```
+```text
 .
 ├── index.php            # Thin bootstrap (web root entry point)
 ├── config.php           # Your editable settings / secrets
@@ -268,70 +163,28 @@ Everything you need to change lives in **`config.php`** (root):
 
 ---
 
-## Terminal version (Python CLI)
+## 🤝 Contributing
 
-A dependency-free (standard-library) scorer that produces the same ranked HTML report
-plus a ranked CSV. See [`terminal-version/README.md`](terminal-version/README.md).
+Contributions are welcome! Open an [issue](https://github.com/morpheusadam/backlinkvoidchecker/issues) or submit a pull request with new scoring signals, export formats, or CLI feature parity.
 
-```bash
-cd terminal-version
+## 📜 License
 
-# Rank a list for your site (HTML report + CSV)
-python backlink_evaluator.py --input backlinks.txt --target-url "https://your-site.com"
-
-# Custom outputs, extra niche keywords, more workers
-python backlink_evaluator.py -i backlinks.txt -o report.html --csv-out out.csv --niche "fintech, saas" --workers 16
-
-# Skip live fetching (offline — name / TLD scoring only)
-python backlink_evaluator.py -i backlinks.txt --no-fetch
-```
-
-<details>
-<summary><b>All CLI flags</b></summary>
-
-<br>
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--input, -i` | `backlinks.txt` | Candidate domains (.txt / .csv / .json) |
-| `--output, -o` | `backlink_report.html` | Ranked HTML report |
-| `--csv-out` | `prospects.csv` | Ranked prospects CSV |
-| `--target-url` | your site | Your website (defines relevance) |
-| `--niche` | *(generic seed)* | Extra niche keywords |
-| `--workers` | `12` | Concurrent fetch workers |
-| `--no-fetch` / `--no-verify-ssl` / `--limit N` | off / off / 0 | Offline mode / no SSL check / cap entries |
-
-</details>
-
-> The **Excel & Google-Disavow exports and the weekly Telegram monitor** are currently
-> **web-app features** (the For Removal / Disavow and Backlink Notif tabs). Porting them
-> to the CLI is planned.
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details. Disavowing healthy links can hurt your rankings — always review the generated disavow file before uploading.
 
 ---
 
-## Versions
+<div align="center">
 
-```mermaid
-timeline
-    title Release history
-    v1 : Original scorer : Ranking : Avoid list : HTML report : PDF / CSV
-    v2 (current) : Excel &amp; scoped exports : Google Disavow tab : Backlink Notif (weekly Telegram) : Login + encrypted per-browser cache : OOP multi-file architecture
-```
+### 👤 Author — Morpheus Adam
 
-- **v1** — the original scorer: ranking, Avoid list, HTML report, PDF / CSV.
-- **v2 (current)** — adds Excel & scoped exports, Google Disavow tab, Backlink Notif
-  (weekly Telegram alerts), login, encrypted per-browser cache & loading timer, and the
-  object-oriented multi-file architecture.
+Web developer & cheerful hacker · PHP · Laravel · Go
 
-See [Releases](../../releases) for downloadable packages.
-
----
-
-## License
-
-MIT — see [`LICENSE`](LICENSE). Use it freely; no warranty. Disavowing healthy links
-can hurt your rankings — always review the generated disavow file before uploading.
-
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=120&section=footer" alt="" />
+<p>
+  <a href="https://github.com/morpheusadam"><img src="https://img.shields.io/badge/GitHub-morpheusadam-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub" /></a>
+  <a href="https://sam.zeonic.me"><img src="https://img.shields.io/badge/Website-sam.zeonic.me-4c1?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website" /></a>
+  <a href="mailto:morpheusadam95@gmail.com"><img src="https://img.shields.io/badge/Email-Contact-D14836?style=for-the-badge&logo=gmail&logoColor=white" alt="Email" /></a>
 </p>
+
+⭐ **If this tool helped you clean up your backlink profile, consider giving it a star!** ⭐
+
+</div>
