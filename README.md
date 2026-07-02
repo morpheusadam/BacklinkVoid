@@ -5,11 +5,11 @@
 ### Score backlink prospects 0–100, audit existing links for spam & toxicity, auto-generate a Google Disavow file, and get weekly Telegram alerts — a PHP web app + Python CLI with no database and no build step.
 
 <p>
-  <img src="https://img.shields.io/github/license/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=4c1" alt="License" />
-  <img src="https://img.shields.io/github/stars/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=ffca28" alt="Stars" />
-  <img src="https://img.shields.io/github/forks/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=42a5f5" alt="Forks" />
-  <img src="https://img.shields.io/github/last-commit/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=8e44ad" alt="Last commit" />
-  <img src="https://img.shields.io/github/repo-size/morpheusadam/backlinkvoidchecker?style=for-the-badge&color=e67e22" alt="Repo size" />
+  <img src="https://img.shields.io/github/license/morpheusadam/BacklinkVoid?style=for-the-badge&color=4c1" alt="License" />
+  <img src="https://img.shields.io/github/stars/morpheusadam/BacklinkVoid?style=for-the-badge&color=ffca28" alt="Stars" />
+  <img src="https://img.shields.io/github/forks/morpheusadam/BacklinkVoid?style=for-the-badge&color=42a5f5" alt="Forks" />
+  <img src="https://img.shields.io/github/last-commit/morpheusadam/BacklinkVoid?style=for-the-badge&color=8e44ad" alt="Last commit" />
+  <img src="https://img.shields.io/github/repo-size/morpheusadam/BacklinkVoid?style=for-the-badge&color=e67e22" alt="Repo size" />
 </p>
 
 <p>
@@ -82,7 +82,7 @@ A built-in **Backlink Notif** monitor watches your existing backlinks and sends 
 ### Terminal version (Python CLI)
 
 ```bash
-git clone https://github.com/morpheusadam/backlinkvoidchecker.git
+git clone https://github.com/morpheusadam/BacklinkVoid.git
 cd backlinkvoidchecker/terminal-version
 
 # Rank a list for your site (HTML report + CSV)
@@ -165,7 +165,7 @@ The endpoint self-throttles to once / 7 days and only alerts about **newly** spa
 
 ## 🤝 Contributing
 
-Contributions are welcome! Open an [issue](https://github.com/morpheusadam/backlinkvoidchecker/issues) or submit a pull request with new scoring signals, export formats, or CLI feature parity.
+Contributions are welcome! Open an [issue](https://github.com/morpheusadam/BacklinkVoid/issues) or submit a pull request with new scoring signals, export formats, or CLI feature parity.
 
 ## 📜 License
 
@@ -194,8 +194,8 @@ Web developer & cheerful hacker · PHP · Laravel · Go
 
 ## ⭐ Star History
 
-<a href="https://star-history.com/#morpheusadam/backlinkvoidchecker&Date">
-  <img src="https://api.star-history.com/svg?repos=morpheusadam/backlinkvoidchecker&type=Date" alt="backlinkvoidchecker — Star History Chart" width="70%" />
+<a href="https://star-history.com/#morpheusadam/BacklinkVoid&Date">
+  <img src="https://api.star-history.com/svg?repos=morpheusadam/BacklinkVoid&type=Date" alt="backlinkvoidchecker — Star History Chart" width="70%" />
 </a>
 
 <div align="center">
