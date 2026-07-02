@@ -1,7 +1,5 @@
 <div align="center">
-
-# 🛡️ Backlink Void Checker
-
+# 🛡️ Backlink Void
 ### Score backlink prospects 0–100, audit existing links for spam & toxicity, auto-generate a Google Disavow file, and get weekly Telegram alerts — a PHP web app + Python CLI with no database and no build step.
 
 <p>
