@@ -188,3 +188,20 @@ Web developer & cheerful hacker · PHP · Laravel · Go
 ⭐ **If this tool helped you clean up your backlink profile, consider giving it a star!** ⭐
 
 </div>
+
+
+---
+
+## ⭐ Star History
+
+<a href="https://star-history.com/#morpheusadam/backlinkvoidchecker&Date">
+  <img src="https://api.star-history.com/svg?repos=morpheusadam/backlinkvoidchecker&type=Date" alt="backlinkvoidchecker — Star History Chart" width="70%" />
+</a>
+
+<div align="center">
+
+### If this project helps you, please give it a ⭐
+
+A star helps other developers discover **backlinkvoidchecker** and supports continued development.
+
+</div>
